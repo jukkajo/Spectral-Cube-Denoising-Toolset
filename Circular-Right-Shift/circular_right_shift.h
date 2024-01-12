@@ -1,0 +1,11 @@
+#ifndef CIRCULAR_RIGHT_SHIFT_H
+#define CIRCULAR_RIGHT_SHIFT_H
+
+/* Created:       23.11.2023
+   Last modified: 11.01.2024
+   @ Jukka J jajoutzs@jyu.fi
+*/
+
+void circular_right_shift(double ** input, int rows, int columns);
+
+#endif  // CIRCULAR_RIGHT_SHIFT_H
