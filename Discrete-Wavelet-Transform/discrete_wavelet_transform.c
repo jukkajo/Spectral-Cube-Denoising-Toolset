@@ -302,7 +302,7 @@ struct HaarDwtDecomposition *haar_dwt_multilevel_forward(
     return decomposition;
 }
 
-static int validate_decomposition(
+int haar_dwt_validate_decomposition(
     const struct HaarDwtDecomposition *decomposition
 ) {
     if (decomposition == NULL || decomposition->original_length < 2U ||
@@ -350,7 +350,7 @@ static int validate_decomposition(
 double *haar_dwt_multilevel_inverse(
     const struct HaarDwtDecomposition *decomposition
 ) {
-    if (validate_decomposition(decomposition) != 0) {
+    if (haar_dwt_validate_decomposition(decomposition) != 0) {
         return NULL;
     }
 

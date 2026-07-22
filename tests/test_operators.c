@@ -7,6 +7,7 @@
 #include "Circular-Left-Shift/circular_left_shift.h"
 #include "Circular-Right-Shift/circular_right_shift.h"
 #include "Discrete-Wavelet-Transform/discrete_wavelet_transform.h"
+#include "Haar-Denoising/haar_denoising.h"
 #include "High-Pass-Downsampling-Operator/hi_pass_downsampling_operator.h"
 #include "High-Pass-Upsampling-Operator/high_pass_upsampling_operator.h"
 #include "Low-Pass-Downsampling-Operator/low_pass_downsampling_operator.h"
@@ -1323,6 +1324,638 @@ static void test_multilevel_haar_dwt(void) {
     haar_dwt_decomposition_free(NULL);
 }
 
+static void check_vector_values(
+    const double *actual,
+    const double *expected,
+    size_t length,
+    const char *label
+) {
+    for (size_t index = 0U; index < length; ++index) {
+        check_close(actual[index], expected[index], label);
+    }
+}
+
+static void test_direct_haar_thresholding(void) {
+    const double values[] = {-2.0, -0.5, 0.0, 0.5, 2.0};
+    const double expected_hard[] = {-2.0, 0.0, 0.0, 0.0, 2.0};
+    const double expected_soft[] = {-1.0, 0.0, 0.0, 0.0, 1.0};
+
+    double hard_values[] = {-2.0, -0.5, 0.0, 0.5, 2.0};
+    CHECK(haar_threshold_coefficients(
+        hard_values,
+        5U,
+        1.0,
+        HAAR_THRESHOLD_HARD
+    ) == 0);
+    check_vector_values(
+        hard_values,
+        expected_hard,
+        5U,
+        "direct hard threshold"
+    );
+
+    double soft_values[] = {-2.0, -0.5, 0.0, 0.5, 2.0};
+    CHECK(haar_threshold_coefficients(
+        soft_values,
+        5U,
+        1.0,
+        HAAR_THRESHOLD_SOFT
+    ) == 0);
+    check_vector_values(
+        soft_values,
+        expected_soft,
+        5U,
+        "direct soft threshold"
+    );
+
+    double hard_equal[] = {-1.0, 1.0};
+    const double hard_equal_expected[] = {-1.0, 1.0};
+    CHECK(haar_threshold_coefficients(
+        hard_equal,
+        2U,
+        1.0,
+        HAAR_THRESHOLD_HARD
+    ) == 0);
+    check_vector_values(
+        hard_equal,
+        hard_equal_expected,
+        2U,
+        "hard threshold equality"
+    );
+
+    double soft_equal[] = {-1.0, 1.0};
+    const double soft_equal_expected[] = {0.0, 0.0};
+    CHECK(haar_threshold_coefficients(
+        soft_equal,
+        2U,
+        1.0,
+        HAAR_THRESHOLD_SOFT
+    ) == 0);
+    check_vector_values(
+        soft_equal,
+        soft_equal_expected,
+        2U,
+        "soft threshold equality"
+    );
+
+    double hard_zero[] = {-2.0, -0.5, 0.0, 0.5, 2.0};
+    CHECK(haar_threshold_coefficients(
+        hard_zero,
+        5U,
+        0.0,
+        HAAR_THRESHOLD_HARD
+    ) == 0);
+    check_vector_values(hard_zero, values, 5U, "zero hard threshold");
+
+    double soft_zero[] = {-2.0, -0.5, 0.0, 0.5, 2.0};
+    CHECK(haar_threshold_coefficients(
+        soft_zero,
+        5U,
+        0.0,
+        HAAR_THRESHOLD_SOFT
+    ) == 0);
+    check_vector_values(soft_zero, values, 5U, "zero soft threshold");
+
+    double hard_large[] = {-2.0, -0.5, 0.0, 0.5, 2.0};
+    const double all_zero[] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    CHECK(haar_threshold_coefficients(
+        hard_large,
+        5U,
+        3.0,
+        HAAR_THRESHOLD_HARD
+    ) == 0);
+    check_vector_values(hard_large, all_zero, 5U, "large hard threshold");
+
+    double soft_large[] = {-2.0, -0.5, 0.0, 0.5, 2.0};
+    CHECK(haar_threshold_coefficients(
+        soft_large,
+        5U,
+        3.0,
+        HAAR_THRESHOLD_SOFT
+    ) == 0);
+    check_vector_values(soft_large, all_zero, 5U, "large soft threshold");
+
+    double invalid_values[] = {-2.0, -0.5, 0.0, 0.5, 2.0};
+    errno = 0;
+    CHECK(haar_threshold_coefficients(
+        invalid_values,
+        5U,
+        -1.0,
+        HAAR_THRESHOLD_HARD
+    ) == -1);
+    CHECK(errno == EINVAL);
+    check_vector_values(
+        invalid_values,
+        values,
+        5U,
+        "negative threshold immutability"
+    );
+
+    errno = 0;
+    CHECK(haar_threshold_coefficients(
+        invalid_values,
+        5U,
+        NAN,
+        HAAR_THRESHOLD_HARD
+    ) == -1);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_threshold_coefficients(
+        invalid_values,
+        5U,
+        INFINITY,
+        HAAR_THRESHOLD_SOFT
+    ) == -1);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_threshold_coefficients(
+        invalid_values,
+        5U,
+        1.0,
+        (enum HaarThresholdMode)99
+    ) == -1);
+    CHECK(errno == EINVAL);
+    check_vector_values(
+        invalid_values,
+        values,
+        5U,
+        "invalid threshold argument immutability"
+    );
+
+    errno = 0;
+    CHECK(haar_threshold_coefficients(
+        NULL,
+        5U,
+        1.0,
+        HAAR_THRESHOLD_HARD
+    ) == -1);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_threshold_coefficients(
+        invalid_values,
+        0U,
+        1.0,
+        HAAR_THRESHOLD_HARD
+    ) == -1);
+    CHECK(errno == EINVAL);
+}
+
+static void check_detail_level_selection(
+    const double *input,
+    size_t input_length,
+    size_t levels,
+    const struct HaarDetailLevelRange *range
+) {
+    struct HaarDwtDecomposition *baseline =
+        haar_dwt_multilevel_forward(input, input_length, levels);
+    struct HaarDwtDecomposition *thresholded =
+        haar_dwt_multilevel_forward(input, input_length, levels);
+    CHECK(baseline != NULL);
+    CHECK(thresholded != NULL);
+    if (baseline == NULL || thresholded == NULL) {
+        haar_dwt_decomposition_free(baseline);
+        haar_dwt_decomposition_free(thresholded);
+        return;
+    }
+
+    CHECK(haar_threshold_detail_levels(
+        thresholded,
+        1000.0,
+        HAAR_THRESHOLD_HARD,
+        range
+    ) == 0);
+
+    check_vector_values(
+        thresholded->final_approximation,
+        baseline->final_approximation,
+        baseline->final_approximation_length,
+        "threshold approximation immutability"
+    );
+
+    for (size_t level = 0U; level < levels; ++level) {
+        const int selected = range == NULL ||
+            (level >= range->first_level && level <= range->last_level);
+        for (size_t index = 0U;
+             index < baseline->detail_lengths[level];
+             ++index) {
+            const double expected = selected != 0
+                ? 0.0
+                : baseline->details[level][index];
+            check_close(
+                thresholded->details[level][index],
+                expected,
+                "selected detail-level threshold"
+            );
+        }
+    }
+
+    haar_dwt_decomposition_free(baseline);
+    haar_dwt_decomposition_free(thresholded);
+}
+
+static void test_haar_detail_thresholding(void) {
+    const double input[] = {0.0, 1.0, 4.0, 2.0, 8.0, 3.0, -1.0, 5.0};
+    const struct HaarDetailLevelRange first_level = {0U, 0U};
+    const struct HaarDetailLevelRange deepest_level = {2U, 2U};
+    const struct HaarDetailLevelRange contiguous_levels = {0U, 1U};
+
+    check_detail_level_selection(input, 8U, 3U, NULL);
+    check_detail_level_selection(input, 8U, 3U, &first_level);
+    check_detail_level_selection(input, 8U, 3U, &deepest_level);
+    check_detail_level_selection(input, 8U, 3U, &contiguous_levels);
+
+    const double one_level_input[] = {1.0, 3.0, 2.0};
+    const struct HaarDetailLevelRange only_level = {0U, 0U};
+    check_detail_level_selection(
+        one_level_input,
+        3U,
+        1U,
+        &only_level
+    );
+
+    struct HaarDwtDecomposition *baseline =
+        haar_dwt_multilevel_forward(input, 8U, 3U);
+    struct HaarDwtDecomposition *invalid =
+        haar_dwt_multilevel_forward(input, 8U, 3U);
+    CHECK(baseline != NULL);
+    CHECK(invalid != NULL);
+    if (baseline != NULL && invalid != NULL) {
+        const struct HaarDetailLevelRange reversed = {2U, 1U};
+        const struct HaarDetailLevelRange out_of_range = {0U, 3U};
+
+        errno = 0;
+        CHECK(haar_threshold_detail_levels(
+            invalid,
+            1.0,
+            HAAR_THRESHOLD_HARD,
+            &reversed
+        ) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(haar_threshold_detail_levels(
+            invalid,
+            1.0,
+            HAAR_THRESHOLD_HARD,
+            &out_of_range
+        ) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(haar_threshold_detail_levels(
+            invalid,
+            -1.0,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        ) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(haar_threshold_detail_levels(
+            invalid,
+            NAN,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        ) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(haar_threshold_detail_levels(
+            invalid,
+            INFINITY,
+            HAAR_THRESHOLD_SOFT,
+            NULL
+        ) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(haar_threshold_detail_levels(
+            invalid,
+            1.0,
+            (enum HaarThresholdMode)99,
+            NULL
+        ) == -1);
+        CHECK(errno == EINVAL);
+
+        check_vector_values(
+            invalid->final_approximation,
+            baseline->final_approximation,
+            baseline->final_approximation_length,
+            "invalid detail threshold approximation immutability"
+        );
+        for (size_t level = 0U; level < baseline->levels; ++level) {
+            check_vector_values(
+                invalid->details[level],
+                baseline->details[level],
+                baseline->detail_lengths[level],
+                "invalid detail threshold immutability"
+            );
+        }
+    }
+    haar_dwt_decomposition_free(baseline);
+    haar_dwt_decomposition_free(invalid);
+
+    errno = 0;
+    CHECK(haar_threshold_detail_levels(
+        NULL,
+        1.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == -1);
+    CHECK(errno == EINVAL);
+}
+
+static void check_zero_threshold_denoising(
+    const double *input,
+    size_t input_length,
+    size_t levels,
+    enum HaarThresholdMode mode
+) {
+    double input_copy[8];
+    CHECK(input_length <= 8U);
+    if (input_length > 8U) {
+        return;
+    }
+    for (size_t index = 0U; index < input_length; ++index) {
+        input_copy[index] = input[index];
+    }
+
+    double *output = haar_denoise_1d(
+        input,
+        input_length,
+        levels,
+        0.0,
+        mode,
+        NULL
+    );
+    CHECK(output != NULL);
+    if (output != NULL) {
+        CHECK(output != input);
+        double maximum_error = 0.0;
+        for (size_t index = 0U; index < input_length; ++index) {
+            const double error = fabs(output[index] - input[index]);
+            if (error > maximum_error) {
+                maximum_error = error;
+            }
+        }
+        CHECK(maximum_error <= 1.0e-12);
+        output[0] = -500.0;
+    }
+
+    check_vector_values(
+        input,
+        input_copy,
+        input_length,
+        "denoising input immutability"
+    );
+    free(output);
+}
+
+static void test_haar_denoising(void) {
+    const double one_level_odd[] = {1.0, -2.0, 4.0};
+    const double multilevel_odd[] = {1.0, 3.0, -2.0, 4.0, 0.5, 6.0, -1.0};
+    check_zero_threshold_denoising(
+        one_level_odd,
+        3U,
+        1U,
+        HAAR_THRESHOLD_HARD
+    );
+    check_zero_threshold_denoising(
+        multilevel_odd,
+        7U,
+        3U,
+        HAAR_THRESHOLD_HARD
+    );
+    check_zero_threshold_denoising(
+        multilevel_odd,
+        7U,
+        3U,
+        HAAR_THRESHOLD_SOFT
+    );
+
+    const double noisy_fixture[] = {1.0, 3.0, 1.0, 3.0};
+    const double inverse_sqrt_two = 1.0 / sqrt(2.0);
+    const double expected_soft[] = {
+        1.0 + inverse_sqrt_two,
+        3.0 - inverse_sqrt_two,
+        1.0 + inverse_sqrt_two,
+        3.0 - inverse_sqrt_two
+    };
+    double *soft_output = haar_denoise_1d(
+        noisy_fixture,
+        4U,
+        2U,
+        1.0,
+        HAAR_THRESHOLD_SOFT,
+        NULL
+    );
+    CHECK(soft_output != NULL);
+    if (soft_output != NULL) {
+        check_vector_values(
+            soft_output,
+            expected_soft,
+            4U,
+            "deterministic soft denoising fixture"
+        );
+    }
+    free(soft_output);
+
+    const double range_fixture[] = {1.0, 3.0, 2.0, 4.0};
+    const struct HaarDetailLevelRange first_level = {0U, 0U};
+    const struct HaarDetailLevelRange deepest_level = {1U, 1U};
+    const double expected_all[] = {2.5, 2.5, 2.5, 2.5};
+    const double expected_first[] = {2.0, 2.0, 3.0, 3.0};
+    const double expected_deepest[] = {1.5, 3.5, 1.5, 3.5};
+
+    double *all_output = haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        100.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    );
+    double *first_output = haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        100.0,
+        HAAR_THRESHOLD_HARD,
+        &first_level
+    );
+    double *deepest_output = haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        100.0,
+        HAAR_THRESHOLD_HARD,
+        &deepest_level
+    );
+    CHECK(all_output != NULL);
+    CHECK(first_output != NULL);
+    CHECK(deepest_output != NULL);
+    if (all_output != NULL) {
+        check_vector_values(
+            all_output,
+            expected_all,
+            4U,
+            "all-level denoising"
+        );
+    }
+    if (first_output != NULL) {
+        check_vector_values(
+            first_output,
+            expected_first,
+            4U,
+            "first-level denoising"
+        );
+    }
+    if (deepest_output != NULL) {
+        check_vector_values(
+            deepest_output,
+            expected_deepest,
+            4U,
+            "deepest-level denoising"
+        );
+    }
+    free(all_output);
+    free(first_output);
+    free(deepest_output);
+
+    const double singleton[] = {5.0};
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        singleton,
+        1U,
+        1U,
+        0.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        singleton,
+        1U,
+        0U,
+        0.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+
+    const struct HaarDetailLevelRange reversed = {1U, 0U};
+    const struct HaarDetailLevelRange out_of_range = {0U, 2U};
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        1.0,
+        HAAR_THRESHOLD_HARD,
+        &reversed
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        1.0,
+        HAAR_THRESHOLD_HARD,
+        &out_of_range
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        -1.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        NAN,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        INFINITY,
+        HAAR_THRESHOLD_SOFT,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        4U,
+        2U,
+        1.0,
+        (enum HaarThresholdMode)99,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        NULL,
+        4U,
+        2U,
+        1.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        0U,
+        1U,
+        1.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        4U,
+        3U,
+        1.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_denoise_1d(
+        range_fixture,
+        SIZE_MAX,
+        1U,
+        0.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EOVERFLOW);
+
+    check_vector_values(
+        noisy_fixture,
+        (const double[]){1.0, 3.0, 1.0, 3.0},
+        4U,
+        "noisy fixture input immutability"
+    );
+    check_vector_values(
+        range_fixture,
+        (const double[]){1.0, 3.0, 2.0, 4.0},
+        4U,
+        "range fixture input immutability"
+    );
+}
+
 static void test_coefficients_and_generic_dwt_boundary(void) {
     const double inverse_sqrt_two = 1.0 / sqrt(2.0);
     CHECK(length_haar == 2U);
@@ -1362,6 +1995,9 @@ int main(void) {
     test_mirror_and_sampling();
     test_haar_dwt();
     test_multilevel_haar_dwt();
+    test_direct_haar_thresholding();
+    test_haar_detail_thresholding();
+    test_haar_denoising();
     test_coefficients_and_generic_dwt_boundary();
 
     if (failures != 0U) {

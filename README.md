@@ -2,7 +2,7 @@
 
 A C11 numerical operator library intended as the foundation for wavelet-based spectral-cube denoising.
 
-The current implementation provides tested signal-processing primitives, multidimensional array utilities, an immutable wavelet coefficient catalogue, reversible one-level and multilevel one-dimensional Haar transforms, and a reproducible build and test workflow. Non-Haar transforms, denoising, spectral-cube file handling, and a user-facing command-line interface are not yet implemented.
+The current implementation provides tested signal-processing primitives, multidimensional array utilities, an immutable wavelet coefficient catalogue, reversible one-level and multilevel one-dimensional Haar transforms, user-directed coefficient thresholding and Haar denoising, and a reproducible build and test workflow. Non-Haar transforms, automatic threshold selection, spectral-cube file handling, and a user-facing command-line interface are not yet implemented.
 
 ## Status
 
@@ -10,9 +10,10 @@ The numerical operator layer is implemented and verified.
 
 - The project builds without compiler warnings.
 - All operator implementations link exactly once into a static library.
-- The test suite contains 4,777 deterministic checks.
+- The test suite contains 4,997 deterministic checks.
 - AddressSanitizer and UndefinedBehaviorSanitizer checks pass.
 - One-level and multilevel normalized Haar forward and inverse transforms support even and odd one-dimensional signals.
+- Hard and soft thresholding support user-selected Haar detail-level ranges.
 - The reserved generic 3D transform API remains unsupported and returns `ENOTSUP` for valid requests.
 
 ## Build
@@ -82,6 +83,7 @@ Some restricted or traced environments do not support LeakSanitizer.
 | Universal tools | Allocation, copying, slicing, reversal, flattening, reshaping, and permutation utilities |
 | Wavelet coefficients | Immutable coefficient sets for supported wavelet families |
 | Discrete wavelet transform | Reversible one-level and multilevel 1D Haar transforms with per-level odd-length metadata |
+| Haar denoising | User-directed hard or soft detail thresholding followed by reconstruction |
 
 ## Wavelet coefficients
 
@@ -126,6 +128,7 @@ Periodic convolution uses direct modular indexing and supports filters that are 
 ├── Circular-Left-Shift/
 ├── Circular-Right-Shift/
 ├── Discrete-Wavelet-Transform/
+├── Haar-Denoising/
 ├── High-Pass-Downsampling-Operator/
 ├── High-Pass-Upsampling-Operator/
 ├── Low-Pass-Downsampling-Operator/
@@ -155,7 +158,7 @@ The repository does not yet provide:
 
 - Forward or inverse transforms for wavelets other than Haar
 - A generic multidimensional transform contract
-- Coefficient thresholding or shrinkage
+- Automatic threshold selection
 - Noise estimation
 - Spectral-cube data structures
 - Scientific file input or output
@@ -168,7 +171,7 @@ The Haar paths have explicit pairing, normalization, level-limit, and per-level 
 ## Roadmap
 
 1. Define and validate contracts for any additional wavelet families.
-2. Implement and evaluate coefficient-domain denoising.
+2. Add automatic threshold selection and noise estimation, then evaluate denoising quality.
 3. Add spectral-cube representation, processing axes, and file input/output.
 4. Add a stable public API and command-line workflow.
 5. Validate the complete pipeline using documented datasets and quality metrics.

@@ -15,6 +15,7 @@ LIB_SOURCES = \
 	Circular-Left-Shift/circular_left_shift.c \
 	Circular-Right-Shift/circular_right_shift.c \
 	Discrete-Wavelet-Transform/discrete_wavelet_transform.c \
+	Haar-Denoising/haar_denoising.c \
 	High-Pass-Downsampling-Operator/hi_pass_downsampling_operator.c \
 	High-Pass-Upsampling-Operator/high_pass_upsampling_operator.c \
 	Low-Pass-Downsampling-Operator/low_pass_downsampling_operator.c \

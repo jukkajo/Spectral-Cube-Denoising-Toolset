@@ -116,6 +116,15 @@ double *haar_dwt_multilevel_inverse(
     const struct HaarDwtDecomposition *decomposition
 );
 
+/*
+ * Validate all multilevel metadata and coefficient pointers without modifying
+ * the decomposition. Return 0 when valid. Return -1 with errno set to EINVAL
+ * for invalid metadata or EOVERFLOW for inconsistent allocation arithmetic.
+ */
+int haar_dwt_validate_decomposition(
+    const struct HaarDwtDecomposition *decomposition
+);
+
 void haar_dwt_decomposition_free(
     struct HaarDwtDecomposition *decomposition
 );
