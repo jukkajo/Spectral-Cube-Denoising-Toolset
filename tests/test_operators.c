@@ -696,10 +696,286 @@ static void test_mirror_and_sampling(void) {
     free_2d_array(odd, 1U);
 }
 
-static void test_coefficients_and_dwt_boundary(void) {
+static void check_haar_case(
+    const double *input,
+    size_t input_length,
+    const double *expected_approximation,
+    const double *expected_detail,
+    size_t expected_coefficient_length,
+    const char *label
+) {
+    struct HaarDwtResult *result = haar_dwt_forward(input, input_length);
+    CHECK(result != NULL);
+    if (result == NULL) {
+        return;
+    }
+
+    CHECK(result->original_length == input_length);
+    CHECK(result->coefficient_length == expected_coefficient_length);
+    CHECK(result->approximation != NULL);
+    CHECK(result->detail != NULL);
+    CHECK(result->approximation != result->detail);
+    CHECK(result->approximation != input);
+    CHECK(result->detail != input);
+
+    for (size_t index = 0U; index < expected_coefficient_length; ++index) {
+        check_close(
+            result->approximation[index],
+            expected_approximation[index],
+            label
+        );
+        check_close(result->detail[index], expected_detail[index], label);
+    }
+
+    double *reconstructed = haar_dwt_inverse(result);
+    CHECK(reconstructed != NULL);
+    if (reconstructed != NULL) {
+        double maximum_error = 0.0;
+        for (size_t index = 0U; index < input_length; ++index) {
+            const double error = fabs(reconstructed[index] - input[index]);
+            if (error > maximum_error) {
+                maximum_error = error;
+            }
+        }
+        CHECK(maximum_error <= 1.0e-12);
+    }
+
+    free(reconstructed);
+    haar_dwt_result_free(result);
+}
+
+static void test_haar_dwt(void) {
+    const double sqrt_two = sqrt(2.0);
+    const double inverse_sqrt_two = 1.0 / sqrt_two;
+
+    const double equal_pair[] = {1.0, 1.0};
+    const double equal_approximation[] = {sqrt_two};
+    const double equal_detail[] = {0.0};
+    check_haar_case(
+        equal_pair,
+        2U,
+        equal_approximation,
+        equal_detail,
+        1U,
+        "Haar [1, 1]"
+    );
+
+    const double opposite_pair[] = {1.0, -1.0};
+    const double opposite_approximation[] = {0.0};
+    const double opposite_detail[] = {sqrt_two};
+    check_haar_case(
+        opposite_pair,
+        2U,
+        opposite_approximation,
+        opposite_detail,
+        1U,
+        "Haar [1, -1]"
+    );
+
+    const double four_values[] = {1.0, 2.0, 3.0, 4.0};
+    const double four_approximation[] = {
+        3.0 * inverse_sqrt_two,
+        7.0 * inverse_sqrt_two
+    };
+    const double four_detail[] = {
+        -inverse_sqrt_two,
+        -inverse_sqrt_two
+    };
+    check_haar_case(
+        four_values,
+        4U,
+        four_approximation,
+        four_detail,
+        2U,
+        "Haar [1, 2, 3, 4]"
+    );
+
+    const double constant[] = {3.0, 3.0, 3.0, 3.0};
+    const double constant_approximation[] = {
+        3.0 * sqrt_two,
+        3.0 * sqrt_two
+    };
+    const double constant_detail[] = {0.0, 0.0};
+    check_haar_case(
+        constant,
+        4U,
+        constant_approximation,
+        constant_detail,
+        2U,
+        "Haar constant"
+    );
+
+    const double impulse[] = {1.0, 0.0, 0.0, 0.0};
+    const double impulse_approximation[] = {inverse_sqrt_two, 0.0};
+    const double impulse_detail[] = {inverse_sqrt_two, 0.0};
+    check_haar_case(
+        impulse,
+        4U,
+        impulse_approximation,
+        impulse_detail,
+        2U,
+        "Haar impulse"
+    );
+
+    const double alternating[] = {1.0, -1.0, 1.0, -1.0};
+    const double alternating_approximation[] = {0.0, 0.0};
+    const double alternating_detail[] = {sqrt_two, sqrt_two};
+    check_haar_case(
+        alternating,
+        4U,
+        alternating_approximation,
+        alternating_detail,
+        2U,
+        "Haar alternating signs"
+    );
+
+    const double ramp[] = {0.0, 1.0, 2.0, 3.0, 4.0, 5.0};
+    const double ramp_approximation[] = {
+        inverse_sqrt_two,
+        5.0 * inverse_sqrt_two,
+        9.0 * inverse_sqrt_two
+    };
+    const double ramp_detail[] = {
+        -inverse_sqrt_two,
+        -inverse_sqrt_two,
+        -inverse_sqrt_two
+    };
+    check_haar_case(
+        ramp,
+        6U,
+        ramp_approximation,
+        ramp_detail,
+        3U,
+        "Haar ramp"
+    );
+
+    const double singleton[] = {5.0};
+    const double singleton_approximation[] = {5.0 * sqrt_two};
+    const double singleton_detail[] = {0.0};
+    check_haar_case(
+        singleton,
+        1U,
+        singleton_approximation,
+        singleton_detail,
+        1U,
+        "Haar singleton"
+    );
+
+    const double odd[] = {1.0, 2.0, 3.0};
+    const double odd_approximation[] = {
+        3.0 * inverse_sqrt_two,
+        3.0 * sqrt_two
+    };
+    const double odd_detail[] = {-inverse_sqrt_two, 0.0};
+    check_haar_case(
+        odd,
+        3U,
+        odd_approximation,
+        odd_detail,
+        2U,
+        "Haar odd length"
+    );
+
+    double mutable_input[] = {2.0, 4.0, 6.0};
+    const double original_input[] = {2.0, 4.0, 6.0};
+    struct HaarDwtResult *owned = haar_dwt_forward(mutable_input, 3U);
+    CHECK(owned != NULL);
+    if (owned != NULL) {
+        for (size_t index = 0U; index < 3U; ++index) {
+            check_close(
+                mutable_input[index],
+                original_input[index],
+                "Haar input immutability"
+            );
+        }
+
+        const double original_detail = owned->detail[0];
+        owned->approximation[0] = 99.0;
+        check_close(
+            owned->detail[0],
+            original_detail,
+            "Haar coefficient array ownership"
+        );
+        check_close(
+            mutable_input[0],
+            original_input[0],
+            "Haar coefficient/input ownership"
+        );
+
+        double *independent_inverse = haar_dwt_inverse(owned);
+        CHECK(independent_inverse != NULL);
+        if (independent_inverse != NULL) {
+            const double saved_approximation = owned->approximation[0];
+            independent_inverse[0] = -100.0;
+            check_close(
+                owned->approximation[0],
+                saved_approximation,
+                "Haar inverse output ownership"
+            );
+        }
+        free(independent_inverse);
+    }
+    haar_dwt_result_free(owned);
+
+    errno = 0;
+    CHECK(haar_dwt_forward(NULL, 1U) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_dwt_forward(equal_pair, 0U) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_dwt_forward(equal_pair, SIZE_MAX) == NULL);
+    CHECK(errno == EOVERFLOW);
+
+    double coefficient = 0.0;
+    struct HaarDwtResult invalid = {0U, 1U, &coefficient, &coefficient};
+    errno = 0;
+    CHECK(haar_dwt_inverse(NULL) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_dwt_inverse(&invalid) == NULL);
+    CHECK(errno == EINVAL);
+
+    invalid.original_length = 1U;
+    invalid.coefficient_length = 0U;
+    errno = 0;
+    CHECK(haar_dwt_inverse(&invalid) == NULL);
+    CHECK(errno == EINVAL);
+
+    invalid.original_length = 4U;
+    invalid.coefficient_length = 1U;
+    errno = 0;
+    CHECK(haar_dwt_inverse(&invalid) == NULL);
+    CHECK(errno == EINVAL);
+
+    invalid.original_length = 2U;
+    invalid.coefficient_length = 1U;
+    invalid.approximation = NULL;
+    errno = 0;
+    CHECK(haar_dwt_inverse(&invalid) == NULL);
+    CHECK(errno == EINVAL);
+
+    invalid.approximation = &coefficient;
+    invalid.detail = NULL;
+    errno = 0;
+    CHECK(haar_dwt_inverse(&invalid) == NULL);
+    CHECK(errno == EINVAL);
+
+    invalid.original_length = SIZE_MAX;
+    invalid.coefficient_length = SIZE_MAX / 2U + SIZE_MAX % 2U;
+    invalid.detail = &coefficient;
+    errno = 0;
+    CHECK(haar_dwt_inverse(&invalid) == NULL);
+    CHECK(errno == EOVERFLOW);
+
+    haar_dwt_result_free(NULL);
+}
+
+static void test_coefficients_and_generic_dwt_boundary(void) {
+    const double inverse_sqrt_two = 1.0 / sqrt(2.0);
     CHECK(length_haar == 2U);
-    check_close(haar[0], 0.707106781, "Haar coefficient 0");
-    check_close(haar[1], 0.707106781, "Haar coefficient 1");
+    check_close(haar[0], inverse_sqrt_two, "Haar coefficient 0");
+    check_close(haar[1], inverse_sqrt_two, "Haar coefficient 1");
     CHECK(length_coiflet_12 == 12U);
     CHECK(length_battle_lemarie_degree_30 == 30U);
 
@@ -732,7 +1008,8 @@ int main(void) {
     test_circular_shifts();
     test_filtering_and_convolution();
     test_mirror_and_sampling();
-    test_coefficients_and_dwt_boundary();
+    test_haar_dwt();
+    test_coefficients_and_generic_dwt_boundary();
 
     if (failures != 0U) {
         fprintf(

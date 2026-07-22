@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 
+/* Normalized Haar low-pass coefficients: {1 / sqrt(2), 1 / sqrt(2)}. */
 extern const double haar[];
 extern const double beylkin[];
 extern const double coiflet_6[];
