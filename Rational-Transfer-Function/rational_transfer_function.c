@@ -1,35 +1,35 @@
-#include <stdio.h>
-#include <stdlib.h>
-
 #include "rational_transfer_function.h"
+
+#include <errno.h>
+
 #include "../Universal-Tools/universal_tools.h"
 
-/* Created:       23.11.2023
-   Last modified: 12.01.2024
-   @ Jukka J jajoutzs@jyu.fi
-*/
+double **rational_transfer_function(
+    double *const *input,
+    size_t rows,
+    size_t columns,
+    const double *filter,
+    size_t filter_length
+) {
+    if (columns == 0U || filter == NULL || filter_length == 0U ||
+        validate_2d_array(input, rows) != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
 
-/* Function to filter the input data, by using method of rational transfer function */
-double ** rational_transfer_function(double ** input, int rows, int columns, double * filter, int filter_length) {
-
-    /* Matrix to store the convolution result */
-    double ** output = create_2d_array(rows, columns);
-
-    /* Performing convolution */
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < columns; j++) {
-            /* Assigning to zero, so we can sum to it */
-            output[i][j] = 0.0;
-
-            for (int k = 0; k < filter_length; k++) {
-                /* Ensuring that we don't go out of bounds */
-                if (j - k >= 0) {
-                    output[i][j] += input[i][j - k] * filter[k];
-                }
+    double **output = create_2d_array(rows, columns);
+    if (output == NULL) {
+        return NULL;
+    }
+    for (size_t row = 0U; row < rows; ++row) {
+        for (size_t column = 0U; column < columns; ++column) {
+            const size_t terms = (filter_length < column + 1U)
+                ? filter_length
+                : column + 1U;
+            for (size_t tap = 0U; tap < terms; ++tap) {
+                output[row][column] += input[row][column - tap] * filter[tap];
             }
         }
     }
-
     return output;
-
 }

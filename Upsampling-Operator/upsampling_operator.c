@@ -1,20 +1,40 @@
-#include <stdio.h>
-#include <stdlib.h>
-
 #include "upsampling_operator.h"
+
+#include <errno.h>
+#include <stdint.h>
+
 #include "../Universal-Tools/universal_tools.h"
 
-/* Created:       20.11.2023
-   Last modified: 20.11.2023
-   @ Jukka J jajoutzs@jyu.fi
-*/
+double **upsampling_operator(
+    double *const *input,
+    size_t rows,
+    size_t columns,
+    size_t scale
+) {
+    if (columns == 0U || scale == 0U || validate_2d_array(input, rows) != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (columns > SIZE_MAX / scale) {
+        errno = EOVERFLOW;
+        return NULL;
+    }
 
-/* Function to perform umpsamling operation */
-double ** upsampling_operator(double ** input, int rows, int columns, int scale) {
-
-    int column_count_new = columns * scale;
-    double ** upsampled = create_2d_array(rows, column_count_new);
-    column_copying_worker(input, upsampled,  rows, columns, scale);
-    
-    return upsampled;
+    const size_t output_columns = columns * scale;
+    double **output = create_2d_array(rows, output_columns);
+    if (output == NULL) {
+        return NULL;
+    }
+    if (column_copying_worker(
+            input,
+            output,
+            rows,
+            columns,
+            output_columns,
+            scale
+        ) != 0) {
+        free_2d_array(output, rows);
+        return NULL;
+    }
+    return output;
 }

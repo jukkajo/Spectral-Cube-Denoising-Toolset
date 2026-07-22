@@ -1,11 +1,18 @@
 #ifndef UPSAMPLING_OPERATOR_H
 #define UPSAMPLING_OPERATOR_H
 
-/* Created:       20.11.2023
-   Last modified: 12.01.2024
-   @ Jukka J jajoutzs@jyu.fi
-*/
+#include <stddef.h>
 
-double ** upsampling_operator(double ** input, int rows, int columns, int scale);
+/*
+ * Insert scale-1 zero columns after each input sample. The output contains
+ * columns * scale columns and is caller-owned. Dimensions and scale must be
+ * positive. Returns NULL with errno set to EINVAL, EOVERFLOW, or ENOMEM.
+ */
+double **upsampling_operator(
+    double *const *input,
+    size_t rows,
+    size_t columns,
+    size_t scale
+);
 
-#endif  // UPSAMPLING_OPERATOR_H
+#endif

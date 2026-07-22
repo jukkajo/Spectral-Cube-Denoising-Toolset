@@ -1,0 +1,7 @@
+*.a
+*.d
+*.o
+
+/program
+/tests/test_operators
+/tests/test_operators_sanitize

@@ -1,22 +1,42 @@
-#include <stdio.h>
-#include <stdlib.h>
+#include "low_pass_upsampling_operator.h"
 
-#include "../Low-Pass-Upsampling-Operator/low_pass_upsampling_operator.h"
-#include "../Universal-Tools/universal_tools.h"
+#include <errno.h>
+#include <stdint.h>
+
 #include "../Periodic-Convolution/periodic_convolution.h"
+#include "../Universal-Tools/universal_tools.h"
+#include "../Upsampling-Operator/upsampling_operator.h"
 
-/* Created:       20.11.2023
-   Last modified: 11.01.2024
-   @ Jukka J jajoutzs@jyu.fi
-*/
+double **low_pass_upsampling_operator(
+    double *const *input,
+    const double *filter,
+    size_t rows,
+    size_t columns,
+    size_t scale,
+    size_t filter_length
+) {
+    if (columns == 0U || scale == 0U || filter == NULL ||
+        filter_length == 0U || validate_2d_array(input, rows) != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (columns > SIZE_MAX / scale) {
+        errno = EOVERFLOW;
+        return NULL;
+    }
 
-/* Function to perform low-pass upsampling */
-double ** low_pass_upsampling_operator(double ** input, double * filter, int rows, int columns, int scale, int filter_length) {
-
-    double ** upsampled = upsampling_operator(input, rows, columns, scale);
-    double ** result = two_dim_convolution(filter, filter_length, upsampled, rows, (columns * scale));
+    double **upsampled = upsampling_operator(input, rows, columns, scale);
+    if (upsampled == NULL) {
+        return NULL;
+    }
+    const size_t output_columns = columns * scale;
+    double **output = two_dim_convolution(
+        filter,
+        filter_length,
+        upsampled,
+        rows,
+        output_columns
+    );
     free_2d_array(upsampled, rows);
-
-    return result;
-
+    return output;
 }

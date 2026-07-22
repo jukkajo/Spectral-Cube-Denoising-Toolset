@@ -1,35 +1,34 @@
-#include <stdio.h>
+#include "circular_left_shift.h"
+
+#include <errno.h>
 #include <stdlib.h>
 
-#include "circular_left_shift.h"
 #include "../Universal-Tools/universal_tools.h"
 
-/* Created:       20.11.2023
-   Last modified: 11.01.2024
-   @ Jukka J jajoutzs@jyu.fi
-*/
-
-/* Function to perform circular left shift on the columns of 2D input-signal */
-void circular_left_shift(double ** input, int rows, int columns) {
-    
-    /* Temporary array to hold the values of the first column */
-    double * temp = create_1d_array(rows);
-
-    /* Storing the values of the first column */
-    for (int i = 0; i < rows; i++) {
-        temp[i] = input[i][0];
+int circular_left_shift(double **input, size_t rows, size_t columns) {
+    if (columns == 0U || validate_2d_array(input, rows) != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (columns == 1U) {
+        return 0;
     }
 
-    /* Shifting columns to left */
-    for (int j = 0; j < columns - 1; j++) {
-        for (int i = 0; i < rows; i++) {
-            input[i][j] = input[i][j + 1];
+    double *first_column = create_1d_array(rows);
+    if (first_column == NULL) {
+        return -1;
+    }
+    for (size_t row = 0U; row < rows; ++row) {
+        first_column[row] = input[row][0];
+    }
+    for (size_t column = 0U; column + 1U < columns; ++column) {
+        for (size_t row = 0U; row < rows; ++row) {
+            input[row][column] = input[row][column + 1U];
         }
     }
-
-    /* Moving values from the temporary array to the rightmost column */
-    for (int i = 0; i < rows; i++) {
-        input[i][columns - 1] = temp[i];
+    for (size_t row = 0U; row < rows; ++row) {
+        input[row][columns - 1U] = first_column[row];
     }
-    free(temp);
+    free(first_column);
+    return 0;
 }

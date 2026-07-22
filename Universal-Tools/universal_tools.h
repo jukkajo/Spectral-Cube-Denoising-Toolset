@@ -1,42 +1,88 @@
-#include <stdio.h>
-#include <stdlib.h>
-
 #ifndef UNIVERSAL_TOOLS_H
 #define UNIVERSAL_TOOLS_H
 
-/* Created:       20.11.2023
-   Last modified: 12.01.2024
-   @ Jukka J jajoutzs@jyu.fi
-*/
+#include <stddef.h>
 
-struct Reshaped {
-    double ** matrix_2d;
-    double *** matrix_3d;
-};
+/*
+ * Array contract
+ * --------------
+ * Dimensions must be positive. Invalid arguments return NULL (allocating
+ * functions) or -1 (status functions) and set errno. Every successful
+ * allocating function returns caller-owned memory. The matching free helper
+ * accepts NULL.
+ *
+ * 2D arrays are represented as rows independently allocated behind double **.
+ * 3D arrays are represented as [rows][columns][pages] behind double ***.
+ */
 
-void free_3d_array(double ***array, int rows, int columns);
+int validate_2d_array(double *const *array, size_t rows);
+int validate_3d_array(double **const *array, size_t rows, size_t columns);
 
-void free_2d_array(double ** array, int rows);
+void free_2d_array(double **array, size_t rows);
+void free_3d_array(double ***array, size_t rows, size_t columns);
 
-double * create_1d_array(int length);
+double *create_1d_array(size_t length);
+double **create_2d_array(size_t rows, size_t columns);
+double ***create_3d_zero_array(size_t rows, size_t columns, size_t pages);
+double **duplicate_2d_array(double *const *source, size_t rows, size_t columns);
 
-double ** create_2d_array(int rows, int columns);
+/* Flatten [rows][columns][pages] to [rows * columns][pages]. */
+double **flatten_3d_to_2d(
+    double **const *input,
+    size_t rows,
+    size_t columns,
+    size_t pages
+);
 
-double *** create_3d_zero_array(int rows, int columns, int pages);
+/* Inverse of flatten_3d_to_2d for the supplied dimensions. */
+double ***reshape_2d_to_3d(
+    double *const *input,
+    size_t rows,
+    size_t columns,
+    size_t pages
+);
 
-double ** flatten_3d_to_2d(double *** input, int rows, int columns, int pages);
+/* Copy the half-open column range [column_start, column_end). */
+double **column_wise_2d_array_submatrix_duplication(
+    double *const *source,
+    size_t rows,
+    size_t columns,
+    size_t column_start,
+    size_t column_end
+);
 
-double ** column_wise_2d_array_submatrix_duplication(double ** source, int rows_original, int columns_original, int column_range_start, int column_range_end);
+/* Copy the half-open page range [page_start, page_end). */
+double ***depth_wise_3d_submatrix_duplication(
+    double **const *input,
+    size_t rows,
+    size_t columns,
+    size_t pages,
+    size_t page_start,
+    size_t page_end
+);
 
-double *** depth_wise_3d_submatrix_duplication(double *** input, int rows, int columns, int depth_range[2]);
- 
-void column_copying_worker(double **input, double **output, int rows, int columns, int step);
+int column_copying_worker(
+    double *const *input,
+    double **output,
+    size_t rows,
+    size_t columns,
+    size_t output_columns,
+    size_t step
+);
 
-double * reverse_1d_array(double * array, int length);
+double *reverse_1d_array(const double *array, size_t length);
 
-struct Reshaped reshape(double ** input_1, double *** input_2, int bottom_z[2], int top_z[2], int dimension_variable, int rows, int columns, int pages);
+/*
+ * new_order is a permutation of {1, 2, 3}; each value identifies the input
+ * axis used for the corresponding output axis. The returned dimensions are
+ * therefore dims[new_order[0]-1], dims[new_order[1]-1], dims[new_order[2]-1].
+ */
+double ***permute_3d(
+    double **const *input,
+    size_t rows,
+    size_t columns,
+    size_t pages,
+    const size_t new_order[3]
+);
 
-double *** permute_3d(double *** input, int rows,  int columns, int pages, int new_order[3]);
-
-#endif // UNIVERSAL_TOOLS_H
-
+#endif

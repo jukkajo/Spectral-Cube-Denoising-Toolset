@@ -1,16 +1,21 @@
-#include <stdio.h>
-#include <stdlib.h>
-
 #include "mirror_filter.h"
 
-/* Created:       23.11.2023
-   Last modified: 11.01.2024
-   @ Jukka J jajoutzs@jyu.fi
-*/
+#include <errno.h>
 
-/* Function to shift 1D signal containg DC frequency content, to Nyquist frequency */
-void mirror_filter(double * filter, int filter_length) {
-    for (int i = 0; i < filter_length; i++) {
-        filter[i] *= (i % 2 == 1) ? -1.0 : 1.0;
+#include "../Universal-Tools/universal_tools.h"
+
+double *mirror_filter(const double *filter, size_t filter_length) {
+    if (filter == NULL || filter_length == 0U) {
+        errno = EINVAL;
+        return NULL;
     }
+
+    double *mirrored = create_1d_array(filter_length);
+    if (mirrored == NULL) {
+        return NULL;
+    }
+    for (size_t index = 0U; index < filter_length; ++index) {
+        mirrored[index] = (index % 2U == 0U) ? filter[index] : -filter[index];
+    }
+    return mirrored;
 }

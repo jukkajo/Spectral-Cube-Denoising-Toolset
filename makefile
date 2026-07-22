@@ -1,22 +1,65 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -std=c11
+CC = cc
+AR = ar
+CPPFLAGS = -I.
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
+ARFLAGS = rcs
+LDLIBS = -lm
+
 TARGET = program
-SRC = main.c
-LIB_DIR = ./Universal-Tools
-LIB_SRC = $(LIB_DIR)/universal_tools.c
+LIBRARY = libspectral_operators.a
+TEST_TARGET = tests/test_operators
+SANITIZER_TEST = tests/test_operators_sanitize
+TEST_SOURCE = tests/test_operators.c
 
-LIB_DIR2 = ./Discrete-Wavelet-Transform
-LIB_SRC2 = $(LIB_DIR2)/discrete_wavelet_transform.c
+LIB_SOURCES = \
+	Circular-Left-Shift/circular_left_shift.c \
+	Circular-Right-Shift/circular_right_shift.c \
+	Discrete-Wavelet-Transform/discrete_wavelet_transform.c \
+	High-Pass-Downsampling-Operator/hi_pass_downsampling_operator.c \
+	High-Pass-Upsampling-Operator/high_pass_upsampling_operator.c \
+	Low-Pass-Downsampling-Operator/low_pass_downsampling_operator.c \
+	Low-pass-Upsampling-Operator/low_pass_upsampling_operator.c \
+	Mirror-Filter/mirror_filter.c \
+	Periodic-Convolution/periodic_convolution.c \
+	Rational-Transfer-Function/rational_transfer_function.c \
+	Time-Reversed-Periodic-Convolution/time_reversed_periodic_convolution.c \
+	Universal-Tools/universal_tools.c \
+	Upsampling-Operator/upsampling_operator.c \
+	Wavelet-Coefficients/wavelet_coefficients.c
 
-INCLUDES = -I$(LIB_DIR) -I$(LIB_DIR2)
+LIB_OBJECTS = $(LIB_SOURCES:.c=.o)
+DEPENDENCIES = $(LIB_OBJECTS:.o=.d) main.d
+SANITIZER_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
+LEAK_CHECK ?= 0
 
-all: $(TARGET)
+.PHONY: all clean test sanitize
 
-$(TARGET): $(SRC) $(LIB_SRC) $(LIB_SRC2)
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ -lm
+all: $(TARGET) $(LIBRARY)
+
+$(TARGET): main.o $(LIBRARY)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.o $(LIBRARY) $(LDLIBS)
+
+$(LIBRARY): $(LIB_OBJECTS)
+	$(AR) $(ARFLAGS) $@ $^
+
+$(TEST_TARGET): $(TEST_SOURCE) $(LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCE) $(LIBRARY) $(LDLIBS)
+
+test: $(TEST_TARGET)
+	./$(TEST_TARGET)
+
+$(SANITIZER_TEST): $(TEST_SOURCE) $(LIB_SOURCES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCE) $(LIB_SOURCES) $(LDLIBS)
+
+sanitize: $(SANITIZER_TEST)
+	# Use LEAK_CHECK=1 where LeakSanitizer is supported outside ptrace.
+	ASAN_OPTIONS=detect_leaks=$(LEAK_CHECK):halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 ./$(SANITIZER_TEST)
+
+%.o: %.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(LIBRARY) $(TEST_TARGET) $(SANITIZER_TEST) \
+		main.o $(LIB_OBJECTS) $(DEPENDENCIES)
 
-.PHONY: all clean
-
+-include $(DEPENDENCIES)

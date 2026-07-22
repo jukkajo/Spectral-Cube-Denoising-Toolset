@@ -1,11 +1,13 @@
 #ifndef CIRCULAR_LEFT_SHIFT_H
 #define CIRCULAR_LEFT_SHIFT_H
 
-/* Created:       20.11.2023
-   Last modified: 11.01.2024
-   @ Jukka J jajoutzs@jyu.fi
-*/
+#include <stddef.h>
 
-void circular_left_shift(double ** input, int rows, int columns);
+/*
+ * Rotate all columns left in place. Rows and columns must be positive and all
+ * row pointers must be non-null. Returns 0 on success, or -1 with errno set.
+ * A one-column matrix is a successful no-op.
+ */
+int circular_left_shift(double **input, size_t rows, size_t columns);
 
-#endif  // CIRCULAR_LEFT_SHIFT_H
+#endif
