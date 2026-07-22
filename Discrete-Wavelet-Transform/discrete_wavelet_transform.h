@@ -54,6 +54,73 @@ double *haar_dwt_inverse(const struct HaarDwtResult *result);
 void haar_dwt_result_free(struct HaarDwtResult *result);
 
 /*
+ * Multilevel normalized Haar decomposition
+ * ----------------------------------------
+ * details[level], detail_lengths[level], and level_input_lengths[level]
+ * describe the decomposition in forward order: index 0 is the first level
+ * applied to the original signal, and index levels - 1 is the deepest level.
+ * final_approximation is the approximation produced by the deepest level.
+ * Every coefficient array is independently allocated.
+ *
+ * At each level, odd input lengths use the one-level duplicate-final-sample
+ * rule documented above. level_input_lengths retains the unpadded length
+ * needed to remove that level's reconstructed duplicate during inversion.
+ */
+struct HaarDwtDecomposition {
+    size_t original_length;
+    size_t levels;
+    double *final_approximation;
+    size_t final_approximation_length;
+    double **details;
+    size_t *detail_lengths;
+    size_t *level_input_lengths;
+};
+
+/*
+ * Return the largest meaningful multilevel count for input_length. A level
+ * may start only with at least two samples; a one-sample approximation is
+ * terminal and is not decomposed. The returned count is therefore zero for
+ * input lengths zero and one. For larger inputs it is the number of repeated
+ * ceil(length / 2) reductions needed to reach one sample.
+ */
+size_t haar_dwt_max_levels(size_t input_length);
+
+/*
+ * Decompose input through exactly levels levels by repeatedly invoking the
+ * verified one-level Haar transform. input is not modified. Zero levels,
+ * NULL input, zero input_length, and levels above haar_dwt_max_levels() return
+ * NULL with errno set to EINVAL. Allocation arithmetic overflow uses
+ * EOVERFLOW; allocation failure uses ENOMEM.
+ *
+ * On success the returned decomposition and all arrays it references are
+ * caller-owned. Release the complete result with
+ * haar_dwt_decomposition_free(), which accepts NULL and partially initialized
+ * decomposition objects produced during allocation failure cleanup.
+ */
+struct HaarDwtDecomposition *haar_dwt_multilevel_forward(
+    const double *input,
+    size_t input_length,
+    size_t levels
+);
+
+/*
+ * Reconstruct the original signal by invoking the verified one-level inverse
+ * from the deepest level to the first. All dimensions, per-level lengths, and
+ * coefficient pointers are validated before reconstruction. Invalid metadata
+ * returns NULL with errno set to EINVAL; allocation arithmetic overflow uses
+ * EOVERFLOW; allocation failure uses ENOMEM. The decomposition is not
+ * modified. The returned original_length-element array is caller-owned and
+ * must be freed with free().
+ */
+double *haar_dwt_multilevel_inverse(
+    const struct HaarDwtDecomposition *decomposition
+);
+
+void haar_dwt_decomposition_free(
+    struct HaarDwtDecomposition *decomposition
+);
+
+/*
  * Reserved generic 3D forward-DWT entry point. No axis, subband layout, or
  * filter-bank phase convention is defined for this compatibility API. Valid
  * requests therefore return NULL with errno set to ENOTSUP; invalid requests

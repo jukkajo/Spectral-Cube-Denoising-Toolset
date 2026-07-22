@@ -2,7 +2,7 @@
 
 A C11 numerical operator library intended as the foundation for wavelet-based spectral-cube denoising.
 
-The current implementation provides tested signal-processing primitives, multidimensional array utilities, an immutable wavelet coefficient catalogue, a reversible one-level one-dimensional Haar transform, and a reproducible build and test workflow. Multilevel and non-Haar transforms, denoising, spectral-cube file handling, and a user-facing command-line interface are not yet implemented.
+The current implementation provides tested signal-processing primitives, multidimensional array utilities, an immutable wavelet coefficient catalogue, reversible one-level and multilevel one-dimensional Haar transforms, and a reproducible build and test workflow. Non-Haar transforms, denoising, spectral-cube file handling, and a user-facing command-line interface are not yet implemented.
 
 ## Status
 
@@ -10,9 +10,9 @@ The numerical operator layer is implemented and verified.
 
 - The project builds without compiler warnings.
 - All operator implementations link exactly once into a static library.
-- The test suite contains 476 deterministic checks.
+- The test suite contains 4,777 deterministic checks.
 - AddressSanitizer and UndefinedBehaviorSanitizer checks pass.
-- One-level normalized Haar forward and inverse transforms support even and odd one-dimensional signals.
+- One-level and multilevel normalized Haar forward and inverse transforms support even and odd one-dimensional signals.
 - The reserved generic 3D transform API remains unsupported and returns `ENOTSUP` for valid requests.
 
 ## Build
@@ -81,7 +81,7 @@ Some restricted or traced environments do not support LeakSanitizer.
 | Mirror filter | Creates a quadrature-style mirrored filter without modifying the input |
 | Universal tools | Allocation, copying, slicing, reversal, flattening, reshaping, and permutation utilities |
 | Wavelet coefficients | Immutable coefficient sets for supported wavelet families |
-| Discrete wavelet transform | Reversible one-level 1D Haar transform with duplicate-last-sample odd-length handling |
+| Discrete wavelet transform | Reversible one-level and multilevel 1D Haar transforms with per-level odd-length metadata |
 
 ## Wavelet coefficients
 
@@ -95,7 +95,7 @@ The coefficient catalogue contains filters for:
 - Vaidyanathan
 - Battle-Lemarié
 
-The normalized Haar coefficients are used by the validated one-level Haar contract. The other coefficient sets have not yet been integrated into a forward and inverse transform pipeline.
+The normalized Haar coefficients are used by the validated one-level and multilevel Haar contracts. The other coefficient sets have not yet been integrated into a forward and inverse transform pipeline.
 
 ## Numerical contracts
 
@@ -153,7 +153,6 @@ The current `program` executable is a minimal integration entry point. It is not
 
 The repository does not yet provide:
 
-- Multilevel wavelet decomposition
 - Forward or inverse transforms for wavelets other than Haar
 - A generic multidimensional transform contract
 - Coefficient thresholding or shrinkage
@@ -164,16 +163,15 @@ The repository does not yet provide:
 - A production command-line interface
 - End-to-end denoising quality validation
 
-The one-level Haar path has an explicit pairing, normalization, and odd-length convention. Phase, filter-ordering, boundary, axis, and subband-layout conventions remain undefined for generic and multidimensional transforms.
+The Haar paths have explicit pairing, normalization, level-limit, and per-level odd-length conventions. Phase, filter-ordering, boundary, axis, and subband-layout conventions remain undefined for generic and multidimensional transforms.
 
 ## Roadmap
 
-1. Add multilevel Haar decomposition and validate its coefficient representation.
-2. Define and validate contracts for any additional wavelet families.
-3. Implement and evaluate coefficient-domain denoising.
-4. Add spectral-cube representation, processing axes, and file input/output.
-5. Add a stable public API and command-line workflow.
-6. Validate the complete pipeline using documented datasets and quality metrics.
+1. Define and validate contracts for any additional wavelet families.
+2. Implement and evaluate coefficient-domain denoising.
+3. Add spectral-cube representation, processing axes, and file input/output.
+4. Add a stable public API and command-line workflow.
+5. Validate the complete pipeline using documented datasets and quality metrics.
 
 # License
 

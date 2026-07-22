@@ -971,6 +971,358 @@ static void test_haar_dwt(void) {
     haar_dwt_result_free(NULL);
 }
 
+static size_t test_half_rounded_up(size_t length) {
+    return length / 2U + length % 2U;
+}
+
+static void fill_multilevel_pattern(
+    double *values,
+    size_t length,
+    size_t pattern
+) {
+    static const double pseudo_random_values[] = {
+        0.25, -1.5, 3.75, 2.125, -4.5, 0.875, 6.25, -2.75,
+        1.625, -0.375, 5.5, -3.125, 2.875, 0.5, -6.75, 4.25
+    };
+
+    for (size_t index = 0U; index < length; ++index) {
+        switch (pattern) {
+            case 0U:
+                values[index] = 3.0;
+                break;
+            case 1U:
+                values[index] = index == 0U ? 1.0 : 0.0;
+                break;
+            case 2U:
+                values[index] = (double)index;
+                break;
+            case 3U:
+                values[index] = index % 2U == 0U ? 1.0 : -1.0;
+                break;
+            default:
+                values[index] = pseudo_random_values[index];
+                break;
+        }
+    }
+}
+
+static void check_multilevel_case(
+    const double *input,
+    size_t input_length,
+    size_t levels,
+    const char *label
+) {
+    double input_copy[16];
+    CHECK(input_length <= 16U);
+    if (input_length > 16U) {
+        return;
+    }
+    for (size_t index = 0U; index < input_length; ++index) {
+        input_copy[index] = input[index];
+    }
+
+    struct HaarDwtDecomposition *decomposition =
+        haar_dwt_multilevel_forward(input, input_length, levels);
+    CHECK(decomposition != NULL);
+    if (decomposition == NULL) {
+        return;
+    }
+
+    CHECK(decomposition->original_length == input_length);
+    CHECK(decomposition->levels == levels);
+    CHECK(decomposition->final_approximation != NULL);
+    CHECK(decomposition->details != NULL);
+    CHECK(decomposition->detail_lengths != NULL);
+    CHECK(decomposition->level_input_lengths != NULL);
+
+    size_t expected_input_length = input_length;
+    for (size_t level = 0U; level < levels; ++level) {
+        const size_t expected_detail_length =
+            test_half_rounded_up(expected_input_length);
+        CHECK(decomposition->level_input_lengths[level] ==
+            expected_input_length);
+        CHECK(decomposition->detail_lengths[level] ==
+            expected_detail_length);
+        CHECK(decomposition->details[level] != NULL);
+        CHECK(decomposition->details[level] != input);
+        CHECK(decomposition->details[level] !=
+            decomposition->final_approximation);
+        for (size_t earlier_level = 0U;
+             earlier_level < level;
+             ++earlier_level) {
+            CHECK(decomposition->details[level] !=
+                decomposition->details[earlier_level]);
+        }
+        expected_input_length = expected_detail_length;
+    }
+    CHECK(decomposition->final_approximation_length ==
+        expected_input_length);
+    CHECK(decomposition->final_approximation != input);
+
+    for (size_t index = 0U; index < input_length; ++index) {
+        check_close(input[index], input_copy[index], label);
+    }
+
+    if (levels == 1U) {
+        struct HaarDwtResult *one_level =
+            haar_dwt_forward(input, input_length);
+        CHECK(one_level != NULL);
+        if (one_level != NULL) {
+            CHECK(one_level->coefficient_length ==
+                decomposition->final_approximation_length);
+            for (size_t index = 0U;
+                 index < one_level->coefficient_length;
+                 ++index) {
+                check_close(
+                    decomposition->final_approximation[index],
+                    one_level->approximation[index],
+                    "multilevel level-one approximation"
+                );
+                check_close(
+                    decomposition->details[0][index],
+                    one_level->detail[index],
+                    "multilevel level-one detail"
+                );
+            }
+        }
+        haar_dwt_result_free(one_level);
+    }
+
+    double detail_first_values[4];
+    CHECK(levels <= 4U);
+    for (size_t level = 0U; level < levels && level < 4U; ++level) {
+        detail_first_values[level] = decomposition->details[level][0];
+    }
+    const double final_first_value = decomposition->final_approximation[0];
+
+    double *reconstructed = haar_dwt_multilevel_inverse(decomposition);
+    CHECK(reconstructed != NULL);
+    if (reconstructed != NULL) {
+        CHECK(reconstructed != input);
+        CHECK(reconstructed != decomposition->final_approximation);
+        double maximum_error = 0.0;
+        for (size_t index = 0U; index < input_length; ++index) {
+            const double error = fabs(reconstructed[index] - input[index]);
+            if (error > maximum_error) {
+                maximum_error = error;
+            }
+        }
+        CHECK(maximum_error <= 1.0e-12);
+
+        reconstructed[0] = -999.0;
+        check_close(
+            decomposition->final_approximation[0],
+            final_first_value,
+            "multilevel inverse output ownership"
+        );
+    }
+
+    check_close(
+        decomposition->final_approximation[0],
+        final_first_value,
+        "multilevel inverse approximation immutability"
+    );
+    for (size_t level = 0U; level < levels && level < 4U; ++level) {
+        check_close(
+            decomposition->details[level][0],
+            detail_first_values[level],
+            "multilevel inverse detail immutability"
+        );
+    }
+
+    free(reconstructed);
+    haar_dwt_decomposition_free(decomposition);
+}
+
+static void test_multilevel_haar_dwt(void) {
+    const size_t input_lengths[] = {1U, 2U, 3U, 4U, 7U, 8U, 15U, 16U};
+    const size_t expected_maximum_levels[] = {
+        0U, 1U, 2U, 2U, 3U, 3U, 4U, 4U
+    };
+
+    CHECK(haar_dwt_max_levels(0U) == 0U);
+    for (size_t length_index = 0U;
+         length_index < sizeof(input_lengths) / sizeof(input_lengths[0]);
+         ++length_index) {
+        const size_t input_length = input_lengths[length_index];
+        const size_t maximum_levels =
+            expected_maximum_levels[length_index];
+        CHECK(haar_dwt_max_levels(input_length) == maximum_levels);
+
+        double input[16];
+        fill_multilevel_pattern(input, input_length, 4U);
+
+        errno = 0;
+        CHECK(haar_dwt_multilevel_forward(input, input_length, 0U) == NULL);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(haar_dwt_multilevel_forward(
+            input,
+            input_length,
+            maximum_levels + 1U
+        ) == NULL);
+        CHECK(errno == EINVAL);
+
+        for (size_t pattern = 0U; pattern < 5U; ++pattern) {
+            fill_multilevel_pattern(input, input_length, pattern);
+            for (size_t levels = 1U;
+                 levels <= maximum_levels;
+                 ++levels) {
+                check_multilevel_case(
+                    input,
+                    input_length,
+                    levels,
+                    "multilevel input immutability"
+                );
+            }
+        }
+    }
+
+    const double pair[] = {1.0, 2.0};
+    errno = 0;
+    CHECK(haar_dwt_multilevel_forward(NULL, 2U, 1U) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_dwt_multilevel_forward(pair, 0U, 1U) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_dwt_multilevel_forward(pair, 2U, SIZE_MAX) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(haar_dwt_multilevel_forward(pair, SIZE_MAX, 1U) == NULL);
+    CHECK(errno == EOVERFLOW);
+
+    errno = 0;
+    CHECK(haar_dwt_multilevel_inverse(NULL) == NULL);
+    CHECK(errno == EINVAL);
+
+    const double metadata_input[] = {
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0
+    };
+    struct HaarDwtDecomposition *metadata =
+        haar_dwt_multilevel_forward(metadata_input, 7U, 3U);
+    CHECK(metadata != NULL);
+    if (metadata != NULL) {
+        const size_t saved_levels = metadata->levels;
+        metadata->levels = 0U;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->levels = saved_levels;
+
+        metadata->levels = 4U;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->levels = saved_levels;
+
+        const size_t saved_original_length = metadata->original_length;
+        metadata->original_length = 1U;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->original_length = saved_original_length;
+
+        double *saved_final_approximation =
+            metadata->final_approximation;
+        metadata->final_approximation = NULL;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->final_approximation = saved_final_approximation;
+
+        const size_t saved_final_length =
+            metadata->final_approximation_length;
+        metadata->final_approximation_length = saved_final_length + 1U;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->final_approximation_length = saved_final_length;
+
+        double **saved_details = metadata->details;
+        metadata->details = NULL;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->details = saved_details;
+
+        size_t *saved_detail_lengths = metadata->detail_lengths;
+        metadata->detail_lengths = NULL;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->detail_lengths = saved_detail_lengths;
+
+        size_t *saved_input_lengths = metadata->level_input_lengths;
+        metadata->level_input_lengths = NULL;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->level_input_lengths = saved_input_lengths;
+
+        const size_t saved_level_input_length =
+            metadata->level_input_lengths[1];
+        metadata->level_input_lengths[1] = saved_level_input_length + 1U;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->level_input_lengths[1] = saved_level_input_length;
+
+        const size_t saved_detail_length = metadata->detail_lengths[1];
+        metadata->detail_lengths[1] = saved_detail_length + 1U;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->detail_lengths[1] = saved_detail_length;
+
+        double *saved_detail = metadata->details[1];
+        metadata->details[1] = NULL;
+        errno = 0;
+        CHECK(haar_dwt_multilevel_inverse(metadata) == NULL);
+        CHECK(errno == EINVAL);
+        metadata->details[1] = saved_detail;
+    }
+    haar_dwt_decomposition_free(metadata);
+
+    double coefficient = 0.0;
+    double *huge_details[] = {&coefficient};
+    const size_t huge_coefficient_length =
+        SIZE_MAX / 2U + SIZE_MAX % 2U;
+    size_t huge_detail_lengths[] = {huge_coefficient_length};
+    size_t huge_input_lengths[] = {SIZE_MAX};
+    struct HaarDwtDecomposition huge = {
+        SIZE_MAX,
+        1U,
+        &coefficient,
+        huge_coefficient_length,
+        huge_details,
+        huge_detail_lengths,
+        huge_input_lengths
+    };
+    errno = 0;
+    CHECK(haar_dwt_multilevel_inverse(&huge) == NULL);
+    CHECK(errno == EOVERFLOW);
+
+    struct HaarDwtDecomposition *partial = calloc(1U, sizeof(*partial));
+    CHECK(partial != NULL);
+    if (partial != NULL) {
+        partial->levels = 3U;
+        partial->final_approximation = create_1d_array(1U);
+        partial->details = calloc(3U, sizeof(*partial->details));
+        partial->detail_lengths =
+            calloc(3U, sizeof(*partial->detail_lengths));
+        CHECK(partial->final_approximation != NULL);
+        CHECK(partial->details != NULL);
+        CHECK(partial->detail_lengths != NULL);
+        if (partial->details != NULL) {
+            partial->details[0] = create_1d_array(1U);
+            CHECK(partial->details[0] != NULL);
+        }
+    }
+    haar_dwt_decomposition_free(partial);
+    haar_dwt_decomposition_free(NULL);
+}
+
 static void test_coefficients_and_generic_dwt_boundary(void) {
     const double inverse_sqrt_two = 1.0 / sqrt(2.0);
     CHECK(length_haar == 2U);
@@ -1009,6 +1361,7 @@ int main(void) {
     test_filtering_and_convolution();
     test_mirror_and_sampling();
     test_haar_dwt();
+    test_multilevel_haar_dwt();
     test_coefficients_and_generic_dwt_boundary();
 
     if (failures != 0U) {
