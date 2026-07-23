@@ -23,6 +23,7 @@ LIB_SOURCES = \
 	Mirror-Filter/mirror_filter.c \
 	Periodic-Convolution/periodic_convolution.c \
 	Rational-Transfer-Function/rational_transfer_function.c \
+	Spectral-Cube/spectral_cube.c \
 	Time-Reversed-Periodic-Convolution/time_reversed_periodic_convolution.c \
 	Universal-Tools/universal_tools.c \
 	Upsampling-Operator/upsampling_operator.c \

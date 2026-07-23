@@ -15,6 +15,7 @@
 #include "Mirror-Filter/mirror_filter.h"
 #include "Periodic-Convolution/periodic_convolution.h"
 #include "Rational-Transfer-Function/rational_transfer_function.h"
+#include "Spectral-Cube/spectral_cube.h"
 #include "Time-Reversed-Periodic-Convolution/time_reversed_periodic_convolution.h"
 #include "Universal-Tools/universal_tools.h"
 #include "Upsampling-Operator/upsampling_operator.h"
@@ -1956,6 +1957,583 @@ static void test_haar_denoising(void) {
     );
 }
 
+static SpectralCube *cube_from_values(
+    size_t height,
+    size_t width,
+    size_t bands,
+    const double *values
+) {
+    SpectralCube *cube = spectral_cube_create(height, width, bands);
+    if (cube == NULL) {
+        return NULL;
+    }
+
+    size_t element_count = 0U;
+    if (spectral_cube_element_count(cube, &element_count) != 0) {
+        spectral_cube_free(cube);
+        return NULL;
+    }
+    for (size_t index = 0U; index < element_count; ++index) {
+        cube->data[index] = values[index];
+    }
+    return cube;
+}
+
+static void check_cube_values(
+    const SpectralCube *cube,
+    const double *expected,
+    const char *label
+) {
+    size_t element_count = 0U;
+    const int count_status =
+        spectral_cube_element_count(cube, &element_count);
+    CHECK(count_status == 0);
+    if (count_status != 0) {
+        return;
+    }
+    check_vector_values(cube->data, expected, element_count, label);
+}
+
+static void test_spectral_cube_model(void) {
+    struct CubeDimensions {
+        size_t height;
+        size_t width;
+        size_t bands;
+    };
+    const struct CubeDimensions dimensions[] = {
+        {1U, 1U, 1U},
+        {1U, 2U, 3U},
+        {2U, 2U, 4U},
+        {3U, 2U, 5U}
+    };
+
+    for (size_t dimension_index = 0U;
+         dimension_index < sizeof(dimensions) / sizeof(dimensions[0]);
+         ++dimension_index) {
+        const size_t height = dimensions[dimension_index].height;
+        const size_t width = dimensions[dimension_index].width;
+        const size_t bands = dimensions[dimension_index].bands;
+        const size_t expected_count = height * width * bands;
+        SpectralCube *cube = spectral_cube_create(height, width, bands);
+        CHECK(cube != NULL);
+        if (cube == NULL) {
+            continue;
+        }
+
+        CHECK(cube->height == height);
+        CHECK(cube->width == width);
+        CHECK(cube->bands == bands);
+        CHECK(cube->data != NULL);
+
+        size_t element_count = 0U;
+        CHECK(spectral_cube_element_count(cube, &element_count) == 0);
+        CHECK(element_count == expected_count);
+        for (size_t index = 0U; index < element_count; ++index) {
+            check_close(cube->data[index], 0.0, "zero-initialized cube");
+        }
+
+        for (size_t row = 0U; row < height; ++row) {
+            for (size_t column = 0U; column < width; ++column) {
+                for (size_t band = 0U; band < bands; ++band) {
+                    const size_t expected_index =
+                        ((row * width) + column) * bands + band;
+                    const double expected_value =
+                        (double)(expected_index + 1U);
+                    CHECK(spectral_cube_set(
+                        cube,
+                        row,
+                        column,
+                        band,
+                        expected_value
+                    ) == 0);
+                    check_close(
+                        cube->data[expected_index],
+                        expected_value,
+                        "pixel-major cube mapping"
+                    );
+
+                    double actual_value = 0.0;
+                    CHECK(spectral_cube_get(
+                        cube,
+                        row,
+                        column,
+                        band,
+                        &actual_value
+                    ) == 0);
+                    check_close(
+                        actual_value,
+                        expected_value,
+                        "checked cube access"
+                    );
+                }
+            }
+        }
+
+        double first_value = 0.0;
+        double last_value = 0.0;
+        CHECK(spectral_cube_get(cube, 0U, 0U, 0U, &first_value) == 0);
+        CHECK(spectral_cube_get(
+            cube,
+            height - 1U,
+            width - 1U,
+            bands - 1U,
+            &last_value
+        ) == 0);
+        check_close(first_value, 1.0, "first cube element");
+        check_close(last_value, (double)element_count, "last cube element");
+
+        SpectralCube *copy = spectral_cube_copy(cube);
+        CHECK(copy != NULL);
+        if (copy != NULL) {
+            CHECK(copy != cube);
+            CHECK(copy->data != cube->data);
+            CHECK(copy->height == cube->height);
+            CHECK(copy->width == cube->width);
+            CHECK(copy->bands == cube->bands);
+            check_vector_values(
+                copy->data,
+                cube->data,
+                element_count,
+                "spectral cube copy"
+            );
+            CHECK(spectral_cube_set(copy, 0U, 0U, 0U, -50.0) == 0);
+            check_close(cube->data[0], 1.0, "spectral cube copy ownership");
+        }
+        spectral_cube_free(copy);
+        spectral_cube_free(cube);
+    }
+
+    SpectralCube *bounds = spectral_cube_create(2U, 2U, 4U);
+    CHECK(bounds != NULL);
+    if (bounds != NULL) {
+        double value = 0.0;
+        errno = 0;
+        CHECK(spectral_cube_get(bounds, 2U, 0U, 0U, &value) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_get(bounds, 0U, 2U, 0U, &value) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_get(bounds, 0U, 0U, 4U, &value) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_set(bounds, 2U, 0U, 0U, 1.0) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_set(bounds, 0U, 2U, 0U, 1.0) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_set(bounds, 0U, 0U, 4U, 1.0) == -1);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_get(bounds, 0U, 0U, 0U, NULL) == -1);
+        CHECK(errno == EINVAL);
+    }
+    spectral_cube_free(bounds);
+
+    errno = 0;
+    CHECK(spectral_cube_create(0U, 1U, 1U) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(spectral_cube_create(1U, 0U, 1U) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(spectral_cube_create(1U, 1U, 0U) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(spectral_cube_create(SIZE_MAX, 2U, 1U) == NULL);
+    CHECK(errno == EOVERFLOW);
+    errno = 0;
+    CHECK(spectral_cube_create(1U, SIZE_MAX, 2U) == NULL);
+    CHECK(errno == EOVERFLOW);
+    errno = 0;
+    CHECK(spectral_cube_create(
+        1U,
+        1U,
+        SIZE_MAX / sizeof(double) + 1U
+    ) == NULL);
+    CHECK(errno == EOVERFLOW);
+
+    size_t element_count = 0U;
+    errno = 0;
+    CHECK(spectral_cube_element_count(NULL, &element_count) == -1);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    SpectralCube invalid_cube = {1U, 1U, 1U, NULL};
+    CHECK(spectral_cube_element_count(&invalid_cube, &element_count) == -1);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(spectral_cube_copy(NULL) == NULL);
+    CHECK(errno == EINVAL);
+
+    spectral_cube_free(NULL);
+}
+
+static void check_zero_threshold_cube(
+    SpectralCube *source,
+    size_t levels,
+    enum HaarThresholdMode mode
+) {
+    SpectralCube *snapshot = spectral_cube_copy(source);
+    CHECK(snapshot != NULL);
+    if (snapshot == NULL) {
+        return;
+    }
+
+    SpectralCube *destination = spectral_cube_denoise_spectral(
+        source,
+        levels,
+        0.0,
+        mode,
+        NULL
+    );
+    CHECK(destination != NULL);
+    if (destination != NULL) {
+        CHECK(destination != source);
+        CHECK(destination->data != source->data);
+        CHECK(destination->height == source->height);
+        CHECK(destination->width == source->width);
+        CHECK(destination->bands == source->bands);
+
+        size_t element_count = 0U;
+        CHECK(spectral_cube_element_count(source, &element_count) == 0);
+        double maximum_error = 0.0;
+        for (size_t index = 0U; index < element_count; ++index) {
+            const double error =
+                fabs(destination->data[index] - source->data[index]);
+            if (error > maximum_error) {
+                maximum_error = error;
+            }
+            CHECK(isfinite(destination->data[index]));
+        }
+        CHECK(maximum_error <= 1.0e-12);
+
+        destination->data[0] = -1000.0;
+        check_close(
+            source->data[0],
+            snapshot->data[0],
+            "spectral denoising destination ownership"
+        );
+    }
+
+    size_t source_count = 0U;
+    CHECK(spectral_cube_element_count(source, &source_count) == 0);
+    check_vector_values(
+        source->data,
+        snapshot->data,
+        source_count,
+        "spectral denoising source immutability"
+    );
+    spectral_cube_free(destination);
+    spectral_cube_free(snapshot);
+}
+
+static void check_cube_range_against_1d(
+    const SpectralCube *source,
+    size_t levels,
+    const struct HaarDetailLevelRange *range
+) {
+    SpectralCube *destination = spectral_cube_denoise_spectral(
+        source,
+        levels,
+        100.0,
+        HAAR_THRESHOLD_HARD,
+        range
+    );
+    CHECK(destination != NULL);
+    if (destination == NULL) {
+        return;
+    }
+
+    double *expected = haar_denoise_1d(
+        source->data,
+        source->bands,
+        levels,
+        100.0,
+        HAAR_THRESHOLD_HARD,
+        range
+    );
+    CHECK(expected != NULL);
+    if (expected != NULL) {
+        check_vector_values(
+            destination->data,
+            expected,
+            source->bands,
+            "spectral cube level range"
+        );
+    }
+    free(expected);
+    spectral_cube_free(destination);
+}
+
+static void test_spectral_cube_denoising(void) {
+    const double two_band_values[] = {1.0, 3.0};
+    SpectralCube *two_band = cube_from_values(1U, 1U, 2U, two_band_values);
+    CHECK(two_band != NULL);
+    if (two_band != NULL) {
+        SpectralCube *hard = spectral_cube_denoise_spectral(
+            two_band,
+            1U,
+            2.0,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        );
+        CHECK(hard != NULL);
+        if (hard != NULL) {
+            check_cube_values(
+                hard,
+                (const double[]){2.0, 2.0},
+                "direct two-band hard denoising"
+            );
+        }
+        spectral_cube_free(hard);
+
+        const double inverse_sqrt_two = 1.0 / sqrt(2.0);
+        SpectralCube *soft = spectral_cube_denoise_spectral(
+            two_band,
+            1U,
+            1.0,
+            HAAR_THRESHOLD_SOFT,
+            NULL
+        );
+        CHECK(soft != NULL);
+        if (soft != NULL) {
+            const double expected_soft[] = {
+                1.0 + inverse_sqrt_two,
+                3.0 - inverse_sqrt_two
+            };
+            check_cube_values(
+                soft,
+                expected_soft,
+                "direct two-band soft denoising"
+            );
+        }
+        spectral_cube_free(soft);
+    }
+    spectral_cube_free(two_band);
+
+    const double multiple_pixel_values[] = {
+        1.0, 3.0, 2.0, 4.0,
+        0.0, 2.0, 4.0, 6.0
+    };
+    const double multiple_pixel_expected[] = {
+        2.5, 2.5, 2.5, 2.5,
+        3.0, 3.0, 3.0, 3.0
+    };
+    SpectralCube *multiple_pixels = cube_from_values(
+        1U,
+        2U,
+        4U,
+        multiple_pixel_values
+    );
+    CHECK(multiple_pixels != NULL);
+    if (multiple_pixels != NULL) {
+        SpectralCube *denoised = spectral_cube_denoise_spectral(
+            multiple_pixels,
+            2U,
+            100.0,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        );
+        CHECK(denoised != NULL);
+        if (denoised != NULL) {
+            check_cube_values(
+                denoised,
+                multiple_pixel_expected,
+                "independent pixel spectra"
+            );
+            CHECK(denoised->height == 1U);
+            CHECK(denoised->width == 2U);
+            CHECK(denoised->bands == 4U);
+        }
+        check_cube_values(
+            multiple_pixels,
+            multiple_pixel_values,
+            "direct cube source immutability"
+        );
+        spectral_cube_free(denoised);
+    }
+
+    check_zero_threshold_cube(
+        multiple_pixels,
+        2U,
+        HAAR_THRESHOLD_HARD
+    );
+    spectral_cube_free(multiple_pixels);
+
+    double odd_values[30];
+    for (size_t index = 0U; index < 30U; ++index) {
+        odd_values[index] = (double)index * 0.25 - 2.0;
+    }
+    SpectralCube *odd_bands = cube_from_values(3U, 2U, 5U, odd_values);
+    CHECK(odd_bands != NULL);
+    if (odd_bands != NULL) {
+        check_zero_threshold_cube(
+            odd_bands,
+            3U,
+            HAAR_THRESHOLD_SOFT
+        );
+    }
+    spectral_cube_free(odd_bands);
+
+    const double range_values[] = {
+        0.0, 1.0, 4.0, 2.0, 8.0, 3.0, -1.0, 5.0
+    };
+    SpectralCube *range_cube = cube_from_values(
+        1U,
+        1U,
+        8U,
+        range_values
+    );
+    CHECK(range_cube != NULL);
+    if (range_cube != NULL) {
+        const struct HaarDetailLevelRange first = {0U, 0U};
+        const struct HaarDetailLevelRange deepest = {2U, 2U};
+        const struct HaarDetailLevelRange contiguous = {0U, 1U};
+        check_cube_range_against_1d(range_cube, 3U, &first);
+        check_cube_range_against_1d(range_cube, 3U, &deepest);
+        check_cube_range_against_1d(range_cube, 3U, &contiguous);
+    }
+    spectral_cube_free(range_cube);
+
+    SpectralCube *invalid_source = cube_from_values(
+        1U,
+        2U,
+        4U,
+        multiple_pixel_values
+    );
+    SpectralCube *invalid_snapshot = spectral_cube_copy(invalid_source);
+    CHECK(invalid_source != NULL);
+    CHECK(invalid_snapshot != NULL);
+    if (invalid_source != NULL) {
+        const struct HaarDetailLevelRange reversed = {1U, 0U};
+        const struct HaarDetailLevelRange out_of_range = {0U, 2U};
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            invalid_source,
+            2U,
+            1.0,
+            HAAR_THRESHOLD_HARD,
+            &reversed
+        ) == NULL);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            invalid_source,
+            2U,
+            1.0,
+            HAAR_THRESHOLD_HARD,
+            &out_of_range
+        ) == NULL);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            invalid_source,
+            0U,
+            1.0,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        ) == NULL);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            invalid_source,
+            3U,
+            1.0,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        ) == NULL);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            invalid_source,
+            2U,
+            -1.0,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        ) == NULL);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            invalid_source,
+            2U,
+            NAN,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        ) == NULL);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            invalid_source,
+            2U,
+            INFINITY,
+            HAAR_THRESHOLD_SOFT,
+            NULL
+        ) == NULL);
+        CHECK(errno == EINVAL);
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            invalid_source,
+            2U,
+            1.0,
+            (enum HaarThresholdMode)99,
+            NULL
+        ) == NULL);
+        CHECK(errno == EINVAL);
+    }
+    if (invalid_source != NULL && invalid_snapshot != NULL) {
+        check_cube_values(
+            invalid_source,
+            invalid_snapshot->data,
+            "failed denoising source immutability"
+        );
+    }
+    spectral_cube_free(invalid_snapshot);
+    spectral_cube_free(invalid_source);
+
+    SpectralCube *single_band = spectral_cube_create(1U, 1U, 1U);
+    CHECK(single_band != NULL);
+    if (single_band != NULL) {
+        errno = 0;
+        CHECK(spectral_cube_denoise_spectral(
+            single_band,
+            1U,
+            0.0,
+            HAAR_THRESHOLD_HARD,
+            NULL
+        ) == NULL);
+        CHECK(errno == EINVAL);
+    }
+    spectral_cube_free(single_band);
+
+    errno = 0;
+    CHECK(spectral_cube_denoise_spectral(
+        NULL,
+        1U,
+        0.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EINVAL);
+
+    double placeholder = 0.0;
+    SpectralCube overflow_cube = {
+        1U,
+        1U,
+        SIZE_MAX / sizeof(double) + 1U,
+        &placeholder
+    };
+    errno = 0;
+    CHECK(spectral_cube_denoise_spectral(
+        &overflow_cube,
+        1U,
+        0.0,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    ) == NULL);
+    CHECK(errno == EOVERFLOW);
+}
+
 static void test_coefficients_and_generic_dwt_boundary(void) {
     const double inverse_sqrt_two = 1.0 / sqrt(2.0);
     CHECK(length_haar == 2U);
@@ -1998,6 +2576,8 @@ int main(void) {
     test_direct_haar_thresholding();
     test_haar_detail_thresholding();
     test_haar_denoising();
+    test_spectral_cube_model();
+    test_spectral_cube_denoising();
     test_coefficients_and_generic_dwt_boundary();
 
     if (failures != 0U) {
