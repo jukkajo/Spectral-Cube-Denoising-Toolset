@@ -1,7 +1,5 @@
-#include <stdio.h>
-#include <stdlib.h>
+#include "Command-Line/spectral_denoise_cli.h"
 
-int main(void) {
-    puts("Spectral operator library built successfully; run `make test`.");
-    return EXIT_SUCCESS;
+int main(int argc, char *argv[]) {
+    return spectral_denoise_cli_run(argc, argv);
 }

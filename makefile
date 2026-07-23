@@ -5,11 +5,13 @@ CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -Wconversion -Wshadow
 ARFLAGS = rcs
 LDLIBS = -lm
 
-TARGET = program
+TARGET = spectral-denoise
 LIBRARY = libspectral_operators.a
 TEST_TARGET = tests/test_operators
 SANITIZER_TEST = tests/test_operators_sanitize
 TEST_SOURCE = tests/test_operators.c
+CLI_SOURCE = Command-Line/spectral_denoise_cli.c
+CLI_OBJECT = $(CLI_SOURCE:.c=.o)
 
 LIB_SOURCES = \
 	Circular-Left-Shift/circular_left_shift.c \
@@ -24,36 +26,37 @@ LIB_SOURCES = \
 	Periodic-Convolution/periodic_convolution.c \
 	Rational-Transfer-Function/rational_transfer_function.c \
 	Spectral-Cube/spectral_cube.c \
+	Spectral-Cube-IO/spectral_cube_io.c \
 	Time-Reversed-Periodic-Convolution/time_reversed_periodic_convolution.c \
 	Universal-Tools/universal_tools.c \
 	Upsampling-Operator/upsampling_operator.c \
 	Wavelet-Coefficients/wavelet_coefficients.c
 
 LIB_OBJECTS = $(LIB_SOURCES:.c=.o)
-DEPENDENCIES = $(LIB_OBJECTS:.o=.d) main.d
+DEPENDENCIES = $(LIB_OBJECTS:.o=.d) $(CLI_OBJECT:.o=.d) main.d
 SANITIZER_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
 LEAK_CHECK ?= 0
 
 .PHONY: all clean test sanitize
 
-all: $(TARGET) $(LIBRARY)
+all: $(LIBRARY) $(TARGET)
 
-$(TARGET): main.o $(LIBRARY)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.o $(LIBRARY) $(LDLIBS)
+$(TARGET): main.o $(CLI_OBJECT) $(LIBRARY)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.o $(CLI_OBJECT) $(LIBRARY) $(LDLIBS)
 
 $(LIBRARY): $(LIB_OBJECTS)
 	$(AR) $(ARFLAGS) $@ $^
 
-$(TEST_TARGET): $(TEST_SOURCE) $(LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCE) $(LIBRARY) $(LDLIBS)
+$(TEST_TARGET): $(TEST_SOURCE) $(CLI_OBJECT) $(LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCE) $(CLI_OBJECT) $(LIBRARY) $(LDLIBS)
 
-test: $(TEST_TARGET)
+test: $(TARGET) $(TEST_TARGET)
 	./$(TEST_TARGET)
 
-$(SANITIZER_TEST): $(TEST_SOURCE) $(LIB_SOURCES)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCE) $(LIB_SOURCES) $(LDLIBS)
+$(SANITIZER_TEST): $(TEST_SOURCE) $(CLI_SOURCE) $(LIB_SOURCES)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(SANITIZER_FLAGS) $(LDFLAGS) -o $@ $(TEST_SOURCE) $(CLI_SOURCE) $(LIB_SOURCES) $(LDLIBS)
 
-sanitize: $(SANITIZER_TEST)
+sanitize: $(TARGET) $(SANITIZER_TEST)
 	# Use LEAK_CHECK=1 where LeakSanitizer is supported outside ptrace.
 	ASAN_OPTIONS=detect_leaks=$(LEAK_CHECK):halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 ./$(SANITIZER_TEST)
 
@@ -62,6 +65,6 @@ sanitize: $(SANITIZER_TEST)
 
 clean:
 	rm -f $(TARGET) $(LIBRARY) $(TEST_TARGET) $(SANITIZER_TEST) \
-		main.o $(LIB_OBJECTS) $(DEPENDENCIES)
+		program main.o $(CLI_OBJECT) $(LIB_OBJECTS) $(DEPENDENCIES)
 
 -include $(DEPENDENCIES)

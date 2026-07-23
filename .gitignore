@@ -3,5 +3,6 @@
 *.o
 
 /program
+/spectral-denoise
 /tests/test_operators
 /tests/test_operators_sanitize

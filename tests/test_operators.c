@@ -1,11 +1,16 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <errno.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "Circular-Left-Shift/circular_left_shift.h"
 #include "Circular-Right-Shift/circular_right_shift.h"
+#include "Command-Line/spectral_denoise_cli.h"
 #include "Discrete-Wavelet-Transform/discrete_wavelet_transform.h"
 #include "Haar-Denoising/haar_denoising.h"
 #include "High-Pass-Downsampling-Operator/hi_pass_downsampling_operator.h"
@@ -15,6 +20,7 @@
 #include "Mirror-Filter/mirror_filter.h"
 #include "Periodic-Convolution/periodic_convolution.h"
 #include "Rational-Transfer-Function/rational_transfer_function.h"
+#include "Spectral-Cube-IO/spectral_cube_io.h"
 #include "Spectral-Cube/spectral_cube.h"
 #include "Time-Reversed-Periodic-Convolution/time_reversed_periodic_convolution.h"
 #include "Universal-Tools/universal_tools.h"
@@ -2534,6 +2540,741 @@ static void test_spectral_cube_denoising(void) {
     CHECK(errno == EOVERFLOW);
 }
 
+static void test_encode_uint64_le(
+    uint64_t value,
+    unsigned char bytes[8]
+) {
+    for (size_t index = 0U; index < 8U; ++index) {
+        bytes[index] = (unsigned char)(value & UINT64_C(0xff));
+        value >>= 8U;
+    }
+}
+
+static void test_encode_double_le(
+    double value,
+    unsigned char bytes[8]
+) {
+    uint64_t bits = 0U;
+    memcpy(&bits, &value, sizeof(bits));
+    test_encode_uint64_le(bits, bytes);
+}
+
+static int write_raw_file(
+    const char *path,
+    const unsigned char *bytes,
+    size_t length
+) {
+    FILE *stream = fopen(path, "wb");
+    if (stream == NULL) {
+        return -1;
+    }
+    const size_t written = fwrite(bytes, 1U, length, stream);
+    if (written != length || fclose(stream) != 0) {
+        if (written != length) {
+            (void)fclose(stream);
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int write_raw_cube(
+    const char magic[8],
+    uint64_t height,
+    uint64_t width,
+    uint64_t bands,
+    const unsigned char *payload,
+    size_t payload_length,
+    const char *path
+) {
+    unsigned char header[SPECTRAL_CUBE_FILE_HEADER_SIZE] = {0U};
+    memcpy(header, magic, 8U);
+    test_encode_uint64_le(height, header + 8U);
+    test_encode_uint64_le(width, header + 16U);
+    test_encode_uint64_le(bands, header + 24U);
+
+    FILE *stream = fopen(path, "wb");
+    if (stream == NULL) {
+        return -1;
+    }
+    int status = 0;
+    if (fwrite(header, 1U, sizeof(header), stream) != sizeof(header)) {
+        status = -1;
+    } else if (payload_length != 0U &&
+               fwrite(payload, 1U, payload_length, stream) != payload_length) {
+        status = -1;
+    }
+    if (fclose(stream) != 0) {
+        status = -1;
+    }
+    return status;
+}
+
+static int test_path_exists(const char *path) {
+    FILE *stream = fopen(path, "rb");
+    if (stream == NULL) {
+        return 0;
+    }
+    (void)fclose(stream);
+    return 1;
+}
+
+static int test_temporary_paths_absent(const char *destination_path) {
+    char path[512];
+    for (unsigned int attempt = 0U; attempt < 100U; ++attempt) {
+        const int written = snprintf(
+            path,
+            sizeof(path),
+            "%s.tmp.%u",
+            destination_path,
+            attempt
+        );
+        if (written < 0 || (size_t)written >= sizeof(path) ||
+            test_path_exists(path) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int read_file_bytes(
+    const char *path,
+    unsigned char *bytes,
+    size_t capacity,
+    size_t *length
+) {
+    FILE *stream = fopen(path, "rb");
+    if (stream == NULL) {
+        return -1;
+    }
+    const size_t amount = fread(bytes, 1U, capacity, stream);
+    if (ferror(stream) != 0 || fclose(stream) != 0) {
+        return -1;
+    }
+    *length = amount;
+    return 0;
+}
+
+static void check_read_failure(const char *path, int expected_errno) {
+    errno = 0;
+    SpectralCube *cube = spectral_cube_read_file(path);
+    CHECK(cube == NULL);
+    CHECK(errno == expected_errno);
+    spectral_cube_free(cube);
+}
+
+static void test_spectral_cube_file_io(void) {
+    const char *valid_path = "tests/.tmp_valid_cube.scube";
+    const char *malformed_path = "tests/.tmp_malformed_cube.scube";
+    const char *existing_path = "tests/.tmp_existing_cube.scube";
+    const char *existing_symlink =
+        "tests/.tmp_existing_cube_symlink.scube";
+    const char *missing_symlink_target =
+        "tests/.tmp_missing_symlink_target.scube";
+    const char *not_directory = "tests/.tmp_not_a_directory";
+    const char *invalid_output =
+        "tests/.tmp_not_a_directory/output.scube";
+    const double values[] = {1.0, -2.0, 3.5, 4.0, 5.25, -6.0};
+    unsigned char payload[16] = {0U};
+    unsigned char file_bytes[96] = {0U};
+    size_t file_length = 0U;
+
+    (void)remove(valid_path);
+    (void)remove(malformed_path);
+    (void)remove(existing_path);
+    (void)unlink(existing_symlink);
+    (void)remove(missing_symlink_target);
+    (void)remove(not_directory);
+
+    SpectralCube *source = cube_from_values(1U, 2U, 3U, values);
+    CHECK(source != NULL);
+    if (source == NULL) {
+        return;
+    }
+
+    CHECK(spectral_cube_write_file(valid_path, source) == 0);
+    CHECK(test_path_exists(valid_path) != 0);
+    CHECK(test_temporary_paths_absent(valid_path) != 0);
+    check_cube_values(source, values, "file write source immutability");
+
+    SpectralCube *round_trip = spectral_cube_read_file(valid_path);
+    CHECK(round_trip != NULL);
+    if (round_trip != NULL) {
+        CHECK(round_trip->height == 1U);
+        CHECK(round_trip->width == 2U);
+        CHECK(round_trip->bands == 3U);
+        CHECK(round_trip->data != source->data);
+        check_cube_values(round_trip, values, "cube file exact round trip");
+        round_trip->data[0] = 99.0;
+        check_close(source->data[0], 1.0, "cube file independent ownership");
+    }
+    spectral_cube_free(round_trip);
+
+    CHECK(read_file_bytes(
+        valid_path,
+        file_bytes,
+        sizeof(file_bytes),
+        &file_length
+    ) == 0);
+    CHECK(file_length == 32U + sizeof(values));
+    CHECK(memcmp(file_bytes, SPECTRAL_CUBE_FILE_MAGIC, 8U) == 0);
+    unsigned char expected_bytes[8] = {0U};
+    test_encode_uint64_le(UINT64_C(1), expected_bytes);
+    CHECK(memcmp(file_bytes + 8U, expected_bytes, 8U) == 0);
+    test_encode_uint64_le(UINT64_C(2), expected_bytes);
+    CHECK(memcmp(file_bytes + 16U, expected_bytes, 8U) == 0);
+    test_encode_uint64_le(UINT64_C(3), expected_bytes);
+    CHECK(memcmp(file_bytes + 24U, expected_bytes, 8U) == 0);
+    for (size_t index = 0U; index < 6U; ++index) {
+        test_encode_double_le(values[index], expected_bytes);
+        CHECK(memcmp(file_bytes + 32U + index * 8U, expected_bytes, 8U) == 0);
+    }
+
+    CHECK(write_raw_cube(
+        "XCUBE001",
+        UINT64_C(1),
+        UINT64_C(1),
+        UINT64_C(1),
+        NULL,
+        0U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+    CHECK(write_raw_cube(
+        "SCUBE002",
+        UINT64_C(1),
+        UINT64_C(1),
+        UINT64_C(1),
+        NULL,
+        0U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+
+    CHECK(write_raw_file(
+        malformed_path,
+        (const unsigned char *)SPECTRAL_CUBE_FILE_MAGIC,
+        7U
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+
+    CHECK(write_raw_cube(
+        SPECTRAL_CUBE_FILE_MAGIC,
+        UINT64_C(0),
+        UINT64_C(1),
+        UINT64_C(1),
+        NULL,
+        0U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+    CHECK(write_raw_cube(
+        SPECTRAL_CUBE_FILE_MAGIC,
+        UINT64_C(1),
+        UINT64_C(0),
+        UINT64_C(1),
+        NULL,
+        0U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+    CHECK(write_raw_cube(
+        SPECTRAL_CUBE_FILE_MAGIC,
+        UINT64_C(1),
+        UINT64_C(1),
+        UINT64_C(0),
+        NULL,
+        0U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+
+    const uint64_t conversion_dimension = UINT64_MAX;
+    if ((uint64_t)(size_t)conversion_dimension != conversion_dimension) {
+        CHECK(write_raw_cube(
+            SPECTRAL_CUBE_FILE_MAGIC,
+            conversion_dimension,
+            UINT64_C(1),
+            UINT64_C(1),
+            NULL,
+            0U,
+            malformed_path
+        ) == 0);
+        check_read_failure(malformed_path, EOVERFLOW);
+    }
+
+    CHECK(write_raw_cube(
+        SPECTRAL_CUBE_FILE_MAGIC,
+        UINT64_MAX,
+        UINT64_C(2),
+        UINT64_C(1),
+        NULL,
+        0U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EOVERFLOW);
+    CHECK(write_raw_cube(
+        SPECTRAL_CUBE_FILE_MAGIC,
+        UINT64_C(1),
+        UINT64_C(1),
+        (uint64_t)(SIZE_MAX / sizeof(double)) + UINT64_C(1),
+        NULL,
+        0U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EOVERFLOW);
+
+    CHECK(write_raw_cube(
+        SPECTRAL_CUBE_FILE_MAGIC,
+        UINT64_C(1),
+        UINT64_C(1),
+        UINT64_C(2),
+        NULL,
+        0U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+    test_encode_double_le(1.0, payload);
+    test_encode_double_le(2.0, payload + 8U);
+    CHECK(write_raw_cube(
+        SPECTRAL_CUBE_FILE_MAGIC,
+        UINT64_C(1),
+        UINT64_C(1),
+        UINT64_C(2),
+        payload,
+        sizeof(payload) - 1U,
+        malformed_path
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+
+    file_bytes[file_length] = 0xffU;
+    CHECK(write_raw_file(
+        malformed_path,
+        file_bytes,
+        file_length + 1U
+    ) == 0);
+    check_read_failure(malformed_path, EINVAL);
+
+    (void)remove("tests/.tmp_missing_cube.scube");
+    errno = 0;
+    CHECK(spectral_cube_read_file("tests/.tmp_missing_cube.scube") == NULL);
+    CHECK(errno == ENOENT);
+
+    const unsigned char marker[] = {0x41U, 0x42U, 0x43U};
+    CHECK(write_raw_file(existing_path, marker, sizeof(marker)) == 0);
+    errno = 0;
+    CHECK(spectral_cube_write_file(existing_path, source) == -1);
+    CHECK(errno == EEXIST);
+    CHECK(read_file_bytes(
+        existing_path,
+        file_bytes,
+        sizeof(file_bytes),
+        &file_length
+    ) == 0);
+    CHECK(file_length == sizeof(marker));
+    CHECK(memcmp(file_bytes, marker, sizeof(marker)) == 0);
+    CHECK(test_temporary_paths_absent(existing_path) != 0);
+
+    const char symlink_target[] = ".tmp_missing_symlink_target.scube";
+    CHECK(symlink(symlink_target, existing_symlink) == 0);
+    errno = 0;
+    CHECK(spectral_cube_write_file(existing_symlink, source) == -1);
+    CHECK(errno == EEXIST);
+    char actual_symlink_target[128] = {0};
+    const ssize_t target_length = readlink(
+        existing_symlink,
+        actual_symlink_target,
+        sizeof(actual_symlink_target)
+    );
+    CHECK(target_length == (ssize_t)(sizeof(symlink_target) - 1U));
+    if (target_length > 0 &&
+        (size_t)target_length < sizeof(actual_symlink_target)) {
+        actual_symlink_target[(size_t)target_length] = '\0';
+        CHECK(strcmp(actual_symlink_target, symlink_target) == 0);
+    }
+    CHECK(test_path_exists(missing_symlink_target) == 0);
+    CHECK(test_temporary_paths_absent(existing_symlink) != 0);
+
+    CHECK(write_raw_file(not_directory, marker, sizeof(marker)) == 0);
+    errno = 0;
+    CHECK(spectral_cube_write_file(invalid_output, source) == -1);
+    CHECK(errno == ENOTDIR);
+    CHECK(test_path_exists(invalid_output) == 0);
+    CHECK(test_temporary_paths_absent(invalid_output) != 0);
+
+    SpectralCube invalid_cube = {1U, 1U, 1U, NULL};
+    errno = 0;
+    CHECK(spectral_cube_write_file(malformed_path, &invalid_cube) == -1);
+    CHECK(errno == EINVAL);
+    CHECK(test_temporary_paths_absent(malformed_path) != 0);
+    double placeholder = 0.0;
+    SpectralCube overflow_cube = {
+        1U,
+        1U,
+        SIZE_MAX / sizeof(double) + 1U,
+        &placeholder
+    };
+    errno = 0;
+    CHECK(spectral_cube_write_file(malformed_path, &overflow_cube) == -1);
+    CHECK(errno == EOVERFLOW);
+    CHECK(test_temporary_paths_absent(malformed_path) != 0);
+    errno = 0;
+    CHECK(spectral_cube_write_file(NULL, source) == -1);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(spectral_cube_write_file("", source) == -1);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(spectral_cube_read_file(NULL) == NULL);
+    CHECK(errno == EINVAL);
+    errno = 0;
+    CHECK(spectral_cube_read_file("") == NULL);
+    CHECK(errno == EINVAL);
+
+    check_cube_values(source, values, "file I/O source immutability");
+    spectral_cube_free(source);
+    (void)remove(valid_path);
+    (void)remove(malformed_path);
+    (void)remove(existing_path);
+    (void)unlink(existing_symlink);
+    (void)remove(not_directory);
+}
+
+static int run_cli_command(const char *arguments) {
+    char command[2048];
+    const int written = snprintf(
+        command,
+        sizeof(command),
+        "./spectral-denoise %s > tests/.tmp_cli_stdout "
+        "2> tests/.tmp_cli_stderr",
+        arguments
+    );
+    if (written < 0 || (size_t)written >= sizeof(command)) {
+        return -1;
+    }
+    return system(command);
+}
+
+static int file_contains_text(const char *path, const char *text) {
+    unsigned char bytes[1024] = {0U};
+    size_t length = 0U;
+    if (read_file_bytes(path, bytes, sizeof(bytes) - 1U, &length) != 0) {
+        return 0;
+    }
+    bytes[length] = '\0';
+    return strstr((const char *)bytes, text) != NULL;
+}
+
+static void check_cli_failure(
+    const char *arguments,
+    const char *output_path
+) {
+    (void)remove(output_path);
+    CHECK(run_cli_command(arguments) != 0);
+    CHECK(test_path_exists(output_path) == 0);
+    CHECK(test_temporary_paths_absent(output_path) != 0);
+}
+
+static void test_spectral_denoise_cli(void) {
+    const char *input_path = "tests/.tmp_cli_input.scube";
+    const char *hard_path = "tests/.tmp_cli_hard.scube";
+    const char *soft_path = "tests/.tmp_cli_soft.scube";
+    const char *failure_path = "tests/.tmp_cli_failure.scube";
+    const char *existing_path = "tests/.tmp_cli_existing.scube";
+    const double values[] = {
+        1.0, 2.0, 4.0, 8.0,
+        -1.0, 3.0, -2.0, 6.0
+    };
+    const unsigned char marker[] = {0x55U, 0xaaU};
+
+    (void)remove(input_path);
+    (void)remove(hard_path);
+    (void)remove(soft_path);
+    (void)remove(failure_path);
+    (void)remove(existing_path);
+    (void)remove("tests/.tmp_cli_stdout");
+    (void)remove("tests/.tmp_cli_stderr");
+
+    SpectralCube *source = cube_from_values(1U, 2U, 4U, values);
+    CHECK(source != NULL);
+    if (source == NULL) {
+        return;
+    }
+    CHECK(spectral_cube_write_file(input_path, source) == 0);
+
+    CHECK(run_cli_command("--help") == 0);
+    CHECK(file_contains_text("tests/.tmp_cli_stdout", "Usage:") != 0);
+    CHECK(run_cli_command("--version") == 0);
+    CHECK(file_contains_text(
+        "tests/.tmp_cli_stdout",
+        SPECTRAL_DENOISE_VERSION
+    ) != 0);
+
+    check_cli_failure("", failure_path);
+    check_cli_failure(
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold 0.5 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube --levels 2 "
+        "--threshold 0.5 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube "
+        "--threshold 0.5 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold 0.5",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold 0.5 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold 0.5 --mode hard --unknown",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels two "
+        "--threshold 0.5 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 0 "
+        "--threshold 0.5 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 3 "
+        "--threshold 0.5 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold -1 --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold nan --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold inf --mode hard",
+        failure_path
+    );
+    check_cli_failure(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold 0.5 --mode garrote",
+        failure_path
+    );
+    CHECK(run_cli_command(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_input.scube --levels 2 "
+        "--threshold 0.5 --mode hard"
+    ) != 0);
+    CHECK(test_path_exists(input_path) != 0);
+    CHECK(test_temporary_paths_absent(input_path) != 0);
+    check_cli_failure(
+        "--input tests/.tmp_cli_missing.scube "
+        "--output tests/.tmp_cli_failure.scube --levels 2 "
+        "--threshold 0.5 --mode hard",
+        failure_path
+    );
+
+    CHECK(write_raw_file(existing_path, marker, sizeof(marker)) == 0);
+    CHECK(run_cli_command(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_existing.scube --levels 2 "
+        "--threshold 0.5 --mode hard"
+    ) != 0);
+    unsigned char existing_bytes[8] = {0U};
+    size_t existing_length = 0U;
+    CHECK(read_file_bytes(
+        existing_path,
+        existing_bytes,
+        sizeof(existing_bytes),
+        &existing_length
+    ) == 0);
+    CHECK(existing_length == sizeof(marker));
+    CHECK(memcmp(existing_bytes, marker, sizeof(marker)) == 0);
+    CHECK(test_temporary_paths_absent(existing_path) != 0);
+
+    char *hard_arguments[] = {
+        "spectral-denoise",
+        "--input",
+        "tests/.tmp_cli_input.scube",
+        "--output",
+        "tests/.tmp_cli_hard.scube",
+        "--levels",
+        "2",
+        "--threshold",
+        "0.75",
+        "--mode",
+        "hard"
+    };
+    CHECK(spectral_denoise_cli_run(11, hard_arguments) == EXIT_SUCCESS);
+    SpectralCube *hard_output = spectral_cube_read_file(hard_path);
+    SpectralCube *direct_hard = spectral_cube_denoise_spectral(
+        source,
+        2U,
+        0.75,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    );
+    CHECK(hard_output != NULL);
+    CHECK(direct_hard != NULL);
+    if (hard_output != NULL && direct_hard != NULL) {
+        CHECK(hard_output->height == source->height);
+        CHECK(hard_output->width == source->width);
+        CHECK(hard_output->bands == source->bands);
+        check_cube_values(
+            hard_output,
+            direct_hard->data,
+            "CLI hard output matches direct API"
+        );
+    }
+    spectral_cube_free(direct_hard);
+    spectral_cube_free(hard_output);
+
+    (void)remove(hard_path);
+    CHECK(run_cli_command(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_hard.scube --levels 2 "
+        "--threshold 0.75 --mode hard"
+    ) == 0);
+    hard_output = spectral_cube_read_file(hard_path);
+    direct_hard = spectral_cube_denoise_spectral(
+        source,
+        2U,
+        0.75,
+        HAAR_THRESHOLD_HARD,
+        NULL
+    );
+    CHECK(hard_output != NULL);
+    CHECK(direct_hard != NULL);
+    if (hard_output != NULL && direct_hard != NULL) {
+        check_cube_values(
+            hard_output,
+            direct_hard->data,
+            "executable hard output matches direct API"
+        );
+    }
+    spectral_cube_free(direct_hard);
+    spectral_cube_free(hard_output);
+
+    CHECK(run_cli_command(
+        "--input tests/.tmp_cli_input.scube "
+        "--output tests/.tmp_cli_soft.scube --levels 2 "
+        "--threshold 0.75 --mode soft"
+    ) == 0);
+    SpectralCube *soft_output = spectral_cube_read_file(soft_path);
+    SpectralCube *direct_soft = spectral_cube_denoise_spectral(
+        source,
+        2U,
+        0.75,
+        HAAR_THRESHOLD_SOFT,
+        NULL
+    );
+    CHECK(soft_output != NULL);
+    CHECK(direct_soft != NULL);
+    if (soft_output != NULL && direct_soft != NULL) {
+        CHECK(soft_output->height == 1U);
+        CHECK(soft_output->width == 2U);
+        CHECK(soft_output->bands == 4U);
+        size_t element_count = 0U;
+        CHECK(spectral_cube_element_count(soft_output, &element_count) == 0);
+        for (size_t index = 0U; index < element_count; ++index) {
+            CHECK(isfinite(soft_output->data[index]));
+        }
+        check_cube_values(
+            soft_output,
+            direct_soft->data,
+            "CLI soft output matches direct API"
+        );
+    }
+    spectral_cube_free(direct_soft);
+    spectral_cube_free(soft_output);
+
+    SpectralCube *input_after = spectral_cube_read_file(input_path);
+    CHECK(input_after != NULL);
+    if (input_after != NULL) {
+        check_cube_values(input_after, values, "CLI input file immutability");
+    }
+    spectral_cube_free(input_after);
+    check_cube_values(source, values, "CLI source immutability");
+    spectral_cube_free(source);
+
+    (void)remove(input_path);
+    (void)remove(hard_path);
+    (void)remove(soft_path);
+    (void)remove(failure_path);
+    (void)remove(existing_path);
+    (void)remove("tests/.tmp_cli_stdout");
+    (void)remove("tests/.tmp_cli_stderr");
+}
+
+static int write_manual_cli_fixture(const char *path) {
+    const double values[] = {
+        1.0, 2.0, 4.0, 8.0,
+        -1.0, 3.0, -2.0, 6.0
+    };
+    SpectralCube *cube = cube_from_values(1U, 2U, 4U, values);
+    if (cube == NULL) {
+        return EXIT_FAILURE;
+    }
+    const int status = spectral_cube_write_file(path, cube);
+    spectral_cube_free(cube);
+    return status == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
+static int verify_manual_cli_fixture(const char *path) {
+    SpectralCube *cube = spectral_cube_read_file(path);
+    if (cube == NULL) {
+        return EXIT_FAILURE;
+    }
+    int valid =
+        cube->height == 1U && cube->width == 2U && cube->bands == 4U;
+    size_t element_count = 0U;
+    if (valid != 0 &&
+        spectral_cube_element_count(cube, &element_count) == 0) {
+        for (size_t index = 0U; index < element_count; ++index) {
+            if (!isfinite(cube->data[index])) {
+                valid = 0;
+            }
+        }
+    } else {
+        valid = 0;
+    }
+    spectral_cube_free(cube);
+    return valid != 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+
 static void test_coefficients_and_generic_dwt_boundary(void) {
     const double inverse_sqrt_two = 1.0 / sqrt(2.0);
     CHECK(length_haar == 2U);
@@ -2565,7 +3306,17 @@ static void test_coefficients_and_generic_dwt_boundary(void) {
     CHECK(errno == EINVAL);
 }
 
-int main(void) {
+int main(int argc, char *argv[]) {
+    if (argc == 3 && strcmp(argv[1], "--write-cli-fixture") == 0) {
+        return write_manual_cli_fixture(argv[2]);
+    }
+    if (argc == 3 && strcmp(argv[1], "--verify-cli-fixture") == 0) {
+        return verify_manual_cli_fixture(argv[2]);
+    }
+    if (argc != 1) {
+        return EXIT_FAILURE;
+    }
+
     test_allocation_and_copy_helpers();
     test_3d_helpers();
     test_circular_shifts();
@@ -2578,6 +3329,8 @@ int main(void) {
     test_haar_denoising();
     test_spectral_cube_model();
     test_spectral_cube_denoising();
+    test_spectral_cube_file_io();
+    test_spectral_denoise_cli();
     test_coefficients_and_generic_dwt_boundary();
 
     if (failures != 0U) {

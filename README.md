@@ -1,8 +1,8 @@
 # Spectral Cube Denoising Toolset
 
-A C11 numerical operator library intended as the foundation for wavelet-based spectral-cube denoising.
+A C11 numerical operator library and focused command-line workflow for Haar denoising along the spectral axis of a contiguous spectral cube.
 
-The current implementation provides tested signal-processing primitives, multidimensional array utilities, an immutable wavelet coefficient catalogue, reversible one-level and multilevel one-dimensional Haar transforms, user-directed coefficient thresholding, and independent spectral-axis denoising for contiguous spectral cubes. Non-Haar transforms, automatic threshold selection, spectral-cube file handling, and a user-facing command-line interface are not yet implemented.
+The current implementation provides tested signal-processing primitives, multidimensional array utilities, an immutable wavelet coefficient catalogue, reversible one-level and multilevel one-dimensional Haar transforms, user-directed coefficient thresholding, independent spectral-axis denoising, the versioned `SCUBE001` binary cube format, and the `spectral-denoise` executable. Non-Haar transforms, automatic threshold selection, metadata, and other scientific file formats are not implemented.
 
 ## Status
 
@@ -10,11 +10,13 @@ The numerical operator layer is implemented and verified.
 
 - The project builds without compiler warnings.
 - All operator implementations link exactly once into a static library.
-- The test suite contains 5,620 deterministic checks.
+- The test suite contains 5,864 deterministic checks.
 - AddressSanitizer and UndefinedBehaviorSanitizer checks pass.
 - One-level and multilevel normalized Haar forward and inverse transforms support even and odd one-dimensional signals.
 - Hard and soft thresholding support user-selected Haar detail-level ranges.
 - Contiguous pixel-major spectral cubes support independent per-pixel spectral denoising.
+- `SCUBE001` files round-trip dimensions and binary64 values exactly.
+- `spectral-denoise` provides one file-to-file Haar spectral-axis workflow.
 - The reserved generic 3D transform API remains unsupported and returns `ENOTSUP` for valid requests.
 
 ## Build
@@ -36,7 +38,7 @@ This produces:
 
 ```text
 libspectral_operators.a
-program
+spectral-denoise
 ```
 
 Remove generated build files:
@@ -67,6 +69,42 @@ make sanitize LEAK_CHECK=1
 
 Some restricted or traced environments do not support LeakSanitizer.
 
+## Spectral-cube file format
+
+Only `SCUBE001` version 1 is supported. Integers and floating-point values are encoded explicitly in little-endian byte order; native C structs are not written.
+
+```text
+Offset  Size  Field
+0       8     ASCII magic bytes SCUBE001
+8       8     height as unsigned 64-bit little-endian
+16      8     width as unsigned 64-bit little-endian
+24      8     bands as unsigned 64-bit little-endian
+32      ...   IEEE-754 binary64 values in little-endian order
+```
+
+Payload values use the same pixel-major order as `SpectralCube`:
+
+```text
+((row * width) + column) * bands + band
+```
+
+Readers require an exact header and payload length and reject trailing bytes. Writers publish a completed temporary sibling with an atomic POSIX hard link, so an existing destination is never replaced; the temporary name is removed after success or failure.
+
+## Command-line workflow
+
+The executable applies the existing multilevel Haar denoising operation independently to each pixel's spectral vector:
+
+```bash
+./spectral-denoise \
+    --input noisy.scube \
+    --output denoised.scube \
+    --levels 2 \
+    --threshold 0.75 \
+    --mode soft
+```
+
+All five processing options are required. `--mode` accepts only `hard` or `soft`; `--help` and `--version` are also available.
+
 ## Implemented components
 
 | Component | Purpose |
@@ -86,6 +124,8 @@ Some restricted or traced environments do not support LeakSanitizer.
 | Discrete wavelet transform | Reversible one-level and multilevel 1D Haar transforms with per-level odd-length metadata |
 | Haar denoising | User-directed hard or soft detail thresholding followed by reconstruction |
 | Spectral cube | Contiguous pixel-major storage and independent spectral-axis Haar denoising |
+| Spectral cube I/O | Exact version-1 `SCUBE001` reading and failure-safe writing |
+| Command-line workflow | File-to-file Haar denoising along the spectral axis |
 
 ## Wavelet coefficients
 
@@ -129,6 +169,7 @@ Periodic convolution uses direct modular indexing and supports filters that are 
 .
 ├── Circular-Left-Shift/
 ├── Circular-Right-Shift/
+├── Command-Line/
 ├── Discrete-Wavelet-Transform/
 ├── Haar-Denoising/
 ├── High-Pass-Downsampling-Operator/
@@ -139,6 +180,7 @@ Periodic convolution uses direct modular indexing and supports filters that are 
 ├── Periodic-Convolution/
 ├── Rational-Transfer-Function/
 ├── Spectral-Cube/
+├── Spectral-Cube-IO/
 ├── Time-Reversed-Periodic-Convolution/
 ├── Universal-Tools/
 ├── Upsampling-Operator/
@@ -151,9 +193,7 @@ Periodic convolution uses direct modular indexing and supports filters that are 
 └── README.md
 ```
 
-`libspectral_operators.a` contains the numerical operator implementations. `tests/test_operators.c` verifies the public contracts and deterministic failure behavior.
-
-The current `program` executable is a minimal integration entry point. It is not yet a spectral-cube denoising CLI.
+`libspectral_operators.a` contains the numerical operators and spectral-cube file APIs. `tests/test_operators.c` verifies their public contracts, malformed-file handling, CLI validation, and deterministic failure behavior.
 
 ## Current limitations
 
@@ -164,20 +204,20 @@ The repository does not yet provide:
 - Spatial-axis or full 3D cube transforms
 - Automatic threshold selection
 - Noise estimation
-- Scientific file input or output
+- Scientific formats other than `SCUBE001`, including ENVI, FITS, and HDF5
 - Metadata handling
-- A production command-line interface
+- Streaming and parallel processing
 - End-to-end denoising quality validation
 
-The Haar paths have explicit pairing, normalization, level-limit, and per-level odd-length conventions. Phase, filter-ordering, boundary, axis, and subband-layout conventions remain undefined for generic and multidimensional transforms.
+The CLI supports only Haar processing on the spectral axis with a user-provided threshold. The Haar paths have explicit pairing, normalization, level-limit, and per-level odd-length conventions. Phase, filter-ordering, boundary, axis, and subband-layout conventions remain undefined for generic and multidimensional transforms.
 
 ## Roadmap
 
 1. Define and validate contracts for any additional wavelet families.
 2. Add automatic threshold selection and noise estimation, then evaluate denoising quality.
-3. Add spectral-cube metadata and scientific file input/output.
-4. Add a stable public API and command-line workflow.
-5. Validate the complete pipeline using documented datasets and quality metrics.
+3. Define spectral-cube metadata requirements before adding other scientific formats.
+4. Stabilize the public API after the supported data and processing contracts are established.
+5. Validate denoising behavior using documented datasets and quality metrics.
 
 # License
 
