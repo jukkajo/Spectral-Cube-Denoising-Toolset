@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -3239,6 +3240,182 @@ static void test_spectral_denoise_cli(void) {
     (void)remove("tests/.tmp_cli_stderr");
 }
 
+static double validation_noise(uint32_t *state) {
+    *state =
+        *state * UINT32_C(1664525) + UINT32_C(1013904223);
+    const uint32_t sample = *state >> 8U;
+    const double unit_sample = (double)sample / 16777216.0;
+    return (2.0 * unit_sample - 1.0) * 0.25;
+}
+
+static double cube_mean_squared_error(
+    const SpectralCube *actual,
+    const SpectralCube *reference
+) {
+    size_t element_count = 0U;
+    if (spectral_cube_element_count(actual, &element_count) != 0 ||
+        actual->height != reference->height ||
+        actual->width != reference->width ||
+        actual->bands != reference->bands) {
+        return NAN;
+    }
+
+    double squared_error_sum = 0.0;
+    for (size_t index = 0U; index < element_count; ++index) {
+        const double error = actual->data[index] - reference->data[index];
+        squared_error_sum += error * error;
+    }
+    return squared_error_sum / (double)element_count;
+}
+
+static void test_release_validation_fixture(void) {
+    const size_t height = 2U;
+    const size_t width = 3U;
+    const size_t bands = 8U;
+    const size_t levels = 3U;
+    const double threshold = 1.0;
+    const uint32_t recorded_seed = UINT32_C(1592594996);
+    const char *noisy_path = "tests/.tmp_validation_noisy.scube";
+    const char *denoised_path =
+        "tests/.tmp_validation_denoised.scube";
+    const char *zero_path = "tests/.tmp_validation_zero.scube";
+    const char *failure_path =
+        "tests/.tmp_validation_failure.scube";
+    const char *missing_path =
+        "tests/.tmp_validation_missing.scube";
+
+    (void)remove(noisy_path);
+    (void)remove(denoised_path);
+    (void)remove(zero_path);
+    (void)remove(failure_path);
+    (void)remove(missing_path);
+
+    SpectralCube *clean = spectral_cube_create(height, width, bands);
+    SpectralCube *noisy = spectral_cube_create(height, width, bands);
+    CHECK(clean != NULL);
+    CHECK(noisy != NULL);
+    if (clean == NULL || noisy == NULL) {
+        spectral_cube_free(noisy);
+        spectral_cube_free(clean);
+        return;
+    }
+
+    uint32_t noise_state = recorded_seed;
+    for (size_t row = 0U; row < height; ++row) {
+        for (size_t column = 0U; column < width; ++column) {
+            const size_t pixel = row * width + column;
+            const double clean_value =
+                -1.25 + 0.5 * (double)pixel;
+            for (size_t band = 0U; band < bands; ++band) {
+                const size_t index = pixel * bands + band;
+                clean->data[index] = clean_value;
+                noisy->data[index] =
+                    clean_value + validation_noise(&noise_state);
+            }
+        }
+    }
+    CHECK(noise_state == UINT32_C(72548900));
+
+    CHECK(spectral_cube_write_file(noisy_path, noisy) == 0);
+    CHECK(run_cli_command(
+        "--input tests/.tmp_validation_noisy.scube "
+        "--output tests/.tmp_validation_denoised.scube "
+        "--levels 3 --threshold 1 --mode soft"
+    ) == 0);
+
+    SpectralCube *denoised = spectral_cube_read_file(denoised_path);
+    CHECK(denoised != NULL);
+    if (denoised != NULL) {
+        CHECK(denoised->height == height);
+        CHECK(denoised->width == width);
+        CHECK(denoised->bands == bands);
+        size_t element_count = 0U;
+        CHECK(spectral_cube_element_count(denoised, &element_count) == 0);
+        for (size_t index = 0U; index < element_count; ++index) {
+            CHECK(isfinite(denoised->data[index]));
+        }
+    }
+
+    const double noisy_mse = cube_mean_squared_error(noisy, clean);
+    const double denoised_mse =
+        denoised == NULL ? NAN :
+        cube_mean_squared_error(denoised, clean);
+    CHECK(isfinite(noisy_mse));
+    CHECK(isfinite(denoised_mse));
+    CHECK(denoised_mse < noisy_mse);
+
+    CHECK(run_cli_command(
+        "--input tests/.tmp_validation_noisy.scube "
+        "--output tests/.tmp_validation_zero.scube "
+        "--levels 3 --threshold 0 --mode soft"
+    ) == 0);
+    SpectralCube *zero_output = spectral_cube_read_file(zero_path);
+    CHECK(zero_output != NULL);
+    double zero_maximum_error = INFINITY;
+    if (zero_output != NULL) {
+        CHECK(zero_output->height == height);
+        CHECK(zero_output->width == width);
+        CHECK(zero_output->bands == bands);
+        zero_maximum_error = 0.0;
+        size_t element_count = 0U;
+        CHECK(spectral_cube_element_count(zero_output, &element_count) == 0);
+        for (size_t index = 0U; index < element_count; ++index) {
+            const double error =
+                fabs(zero_output->data[index] - noisy->data[index]);
+            if (error > zero_maximum_error) {
+                zero_maximum_error = error;
+            }
+        }
+    }
+    CHECK(zero_maximum_error <= 1.0e-12);
+
+    CHECK(run_cli_command(
+        "--input tests/.tmp_validation_missing.scube "
+        "--output tests/.tmp_validation_failure.scube "
+        "--levels 3 --threshold 1 --mode soft"
+    ) != 0);
+    CHECK(file_contains_text(
+        "tests/.tmp_cli_stderr",
+        "cannot read"
+    ) != 0);
+    CHECK(test_path_exists(failure_path) == 0);
+    CHECK(test_temporary_paths_absent(failure_path) != 0);
+
+    printf(
+        "Validation fixture: height=%zu width=%zu bands=%zu "
+        "seed=%" PRIu32 " levels=%zu threshold=%.1f mode=soft "
+        "noisy_mse=%.17g denoised_mse=%.17g "
+        "zero_threshold_max_error=%.17g\n",
+        height,
+        width,
+        bands,
+        recorded_seed,
+        levels,
+        threshold,
+        noisy_mse,
+        denoised_mse,
+        zero_maximum_error
+    );
+
+    spectral_cube_free(zero_output);
+    spectral_cube_free(denoised);
+    spectral_cube_free(noisy);
+    spectral_cube_free(clean);
+    (void)remove(noisy_path);
+    (void)remove(denoised_path);
+    (void)remove(zero_path);
+    (void)remove(failure_path);
+    (void)remove("tests/.tmp_cli_stdout");
+    (void)remove("tests/.tmp_cli_stderr");
+    CHECK(test_path_exists(noisy_path) == 0);
+    CHECK(test_path_exists(denoised_path) == 0);
+    CHECK(test_path_exists(zero_path) == 0);
+    CHECK(test_path_exists(failure_path) == 0);
+    CHECK(test_temporary_paths_absent(noisy_path) != 0);
+    CHECK(test_temporary_paths_absent(denoised_path) != 0);
+    CHECK(test_temporary_paths_absent(zero_path) != 0);
+}
+
 static int write_manual_cli_fixture(const char *path) {
     const double values[] = {
         1.0, 2.0, 4.0, 8.0,
@@ -3331,6 +3508,7 @@ int main(int argc, char *argv[]) {
     test_spectral_cube_denoising();
     test_spectral_cube_file_io();
     test_spectral_denoise_cli();
+    test_release_validation_fixture();
     test_coefficients_and_generic_dwt_boundary();
 
     if (failures != 0U) {
